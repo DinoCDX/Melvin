@@ -330,7 +330,10 @@ class WikiView(discord.ui.LayoutView):
                 ),
             ),
             SmallSeparator(),
-            discord.ui.Section(body, accessory=discord.ui.Thumbnail(thumbnail["source"]))
+            discord.ui.Section(
+                body,
+                accessory=discord.ui.Thumbnail(thumbnail["source"]),
+            )
             if thumbnail
             else body,
             SmallSeparator(),
