@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from datetime import UTC, datetime
 
 import aiosqlite
@@ -255,7 +256,12 @@ async def get_shard_status() -> list[dict]:
                 """,
                 (shard_id, MAX_HISTORY_POINTS),
             )
-            rows = list(reversed(await cursor.fetchall()))
+            # handle disconnects
+            rows = [
+                row
+                for row in reversed(await cursor.fetchall())
+                if math.isfinite(row["latency_ms"])
+            ]
             if not rows:
                 continue
 
