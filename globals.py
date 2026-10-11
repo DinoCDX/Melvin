@@ -50,18 +50,22 @@ ERROR_MESSAGE = f"**Something went wrong with that. Please [join the support ser
 
 
 class DisplayNameFont(enum.Enum):
-    bangers = 1  # unimplemented
-    bio_rhyme = 2  # unimplemented
+    # bangers = 1
+    # bio_rhyme = 2
     cherry_bomb = 3
     chicle = 4
-    compagnon = 5  # unimplemented
+    # compagnon = 5
     museo_moderno = 6
     neo_castel = 7
     pixelify = 8
-    ribes = 9  # unimplemented
+    # ribes = 9
     sinistre = 10
     default = 11
     zilla_slab = 12
+    playpen_sans = 13
+    orbitron = 14
+    new_rocker = 15
+    kalam = 16
 
 
 class DisplayNameEffect(enum.Enum):
@@ -70,4 +74,6 @@ class DisplayNameEffect(enum.Enum):
     neon = 3
     toon = 4
     pop = 5
-    glow = 6  # unimplemented
+    # glow = 6
+    prism = 7
+    gummy = 8

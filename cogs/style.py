@@ -27,6 +27,10 @@ FONTS = (
     ("sinistre", "Vampyre"),
     ("default", "GG Sans"),
     ("zilla_slab", "Tempo"),
+    ("playpen_sans", "Monkey Bars"),
+    ("orbitron", "Mainframe"),
+    ("new_rocker", "Headbang"),
+    ("kalam", "Journal"),
 )
 EFFECTS = (
     ("solid", "Solid"),
@@ -34,6 +38,8 @@ EFFECTS = (
     ("neon", "Neon"),
     ("toon", "Toon"),
     ("pop", "Pop"),
+    ("prism", "Prism"),
+    ("gummy", "Gummy"),
 )
 
 MODULE = Module(
@@ -60,7 +66,7 @@ MODULE = Module(
         Setting(
             "colors",
             "Colors",
-            "One hex color, or two joined by a dash for the gradient, eg. F4A261-FFFFFF.",
+            "One hex color, or up to five joined by dashes for Prism, Gradient, and Gummy, eg. F4A261-FFFFFF.",
             "color",
             default="FFFFFF",
             placeholder="F4A261-FFFFFF",
@@ -121,9 +127,14 @@ class StyleCog(
 
         colors = (values["colors"] or "FFFFFF").split("-")
         effect = DisplayNameEffect[values["effect"]]
-        # gradients need two colors and everything else uses one
-        if effect is DisplayNameEffect.gradient:
-            colors = [colors[0], colors[-1]]
+
+        # Prism, Gradient, and Gummy accept up to 5 colors; everything else uses 1
+        if effect in {
+            DisplayNameEffect.prism,
+            DisplayNameEffect.gradient,
+            DisplayNameEffect.gummy,
+        }:
+            colors = colors[:5]
         else:
             colors = colors[:1]
 
