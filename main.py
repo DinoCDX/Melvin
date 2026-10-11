@@ -204,6 +204,9 @@ async def update_shard_latency() -> None:
     api_latency_ms = await _measure_api_latency() or 0.0
     latencies = getattr(bot, "latencies", None) or [(0, bot.latency)]
     for shard_id, latency in latencies:
+        # handle disconnects
+        if not math.isfinite(latency):
+            continue
         await status.record_latency(shard_id, latency * 1000, api_latency_ms)
 
 
