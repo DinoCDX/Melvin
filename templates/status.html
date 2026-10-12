@@ -55,26 +55,19 @@
     <h2 class="status-heading status-heading-secondary">other info</h2>
 
     {% if metrics %}
-    <div class="status-grid">
+    <div class="status-grid is-thirds">
         {% for card in [
-            {"label": "Server Count", "value": metrics.guild_count, "points": metrics.guild_chart_points, "tooltip": metrics.guild_tooltip_points},
-            {"label": "User Count", "value": metrics.member_count, "points": metrics.member_chart_points, "tooltip": metrics.member_tooltip_points},
+            {"label": "Server Count", "value": metrics.guild_count},
+            {"label": "User Count", "value": metrics.member_count},
+            {"label": "Commands Ran", "value": metrics.command_count},
         ] %}
-        <div class="status-card">
+        <div class="status-card is-plain">
             <div class="status-card-header">
                 <div class="status-card-row">
                     <span class="status-shard-label">{{ card.label }}</span>
                     <span class="status-checked">{{ metrics.last_checked }}</span>
                 </div>
                 <span class="status-latency">{{ "{:,}".format(card.value) }}</span>
-                {% if metrics.span %}<span class="status-checked">{{ metrics.span }} charted</span>{% endif %}
-            </div>
-            <div class="status-chart" tabindex="0" role="img"
-                 aria-label="{{ card.label }}{% if metrics.span %} over the last {{ metrics.span }}{% endif %}: currently {{ card.value }}. Use left and right arrow keys to step through readings."
-                 data-points='{{ card.tooltip | tojson }}'>
-                <svg viewBox="0 0 {{ metrics.chart_width }} {{ metrics.chart_height }}" preserveAspectRatio="none" aria-hidden="true">
-                    <polygon points="{{ card.points }}" class="status-chart-series-1"></polygon>
-                </svg>
             </div>
         </div>
         {% endfor %}

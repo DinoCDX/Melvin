@@ -9,6 +9,7 @@ import charts
 from globals import DATA_DIR
 
 DB_PATH = DATA_DIR / "uptime.db"
+STATS_DB_PATH = DATA_DIR / "stats.db"
 START_TIME_FILE = DATA_DIR / "start_time.txt"
 
 MAX_HISTORY_POINTS = 14
@@ -306,6 +307,19 @@ async def get_shard_status() -> list[dict]:
     return shards
 
 
+async def _get_command_count() -> int:
+    if not await asyncio.to_thread(STATS_DB_PATH.is_file):
+        return 0
+    try:
+        async with aiosqlite.connect(STATS_DB_PATH) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM command_logs")
+            row = await cursor.fetchone()
+    except aiosqlite.OperationalError:
+        log.exception("counting commands failed")
+        return 0
+    return row[0] if row else 0
+
+
 async def get_metrics_status() -> dict | None:
     await init_db()
 
@@ -315,43 +329,17 @@ async def get_metrics_status() -> dict | None:
             """
             SELECT guild_count, member_count, checked_at FROM bot_metrics
             ORDER BY checked_at DESC
-            LIMIT ?
+            LIMIT 1
             """,
-            (MAX_HISTORY_POINTS,),
         )
-        rows = list(reversed(await cursor.fetchall()))
+        latest = await cursor.fetchone()
 
-    if not rows:
+    if not latest:
         return None
-
-    guild_history = [row["guild_count"] for row in rows]
-    member_history = [row["member_count"] for row in rows]
-    latest = rows[-1]
-
-    guild_ys = _scale(guild_history, min(guild_history), max(guild_history))
-    member_ys = _scale(
-        member_history,
-        min(member_history),
-        max(member_history),
-    )
 
     return {
         "guild_count": latest["guild_count"],
         "member_count": latest["member_count"],
+        "command_count": await _get_command_count(),
         "last_checked": _format_relative(latest["checked_at"]),
-        "span": _format_span(rows),
-        "guild_chart_points": _area(guild_ys),
-        "member_chart_points": _area(member_ys),
-        "guild_tooltip_points": _tooltip(
-            rows,
-            guild_ys,
-            [("Servers", guild_history, "", "series-1")],
-        ),
-        "member_tooltip_points": _tooltip(
-            rows,
-            member_ys,
-            [("Users", member_history, "", "series-1")],
-        ),
-        "chart_width": CHART_WIDTH,
-        "chart_height": CHART_HEIGHT,
     }

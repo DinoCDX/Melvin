@@ -942,6 +942,16 @@ a {
     background: var(--raised);
 }
 
+/* no chart to sit on, so no lip */
+.status-card.is-plain {
+    border-bottom: 1px solid var(--border);
+}
+
+/* three cards wide */
+.status-grid.is-thirds {
+    max-width: 752px;
+}
+
 .status-card-empty {
     display: flex;
     align-items: center;
