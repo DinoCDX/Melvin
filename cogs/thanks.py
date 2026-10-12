@@ -85,7 +85,9 @@ NEGATION_PATTERN = re.compile(
 
 
 def _is_thanks(content: str) -> bool:
-    return bool(TRIGGER_PATTERN.search(content)) and not NEGATION_PATTERN.search(content)
+    return bool(TRIGGER_PATTERN.search(content)) and not NEGATION_PATTERN.search(
+        content,
+    )
 
 
 class ThanksCog(
@@ -171,7 +173,10 @@ class ThanksCog(
     async def _get_thanks(self, user_id: int) -> int:
         async with (
             aiosqlite.connect(self.db_path) as db,
-            db.execute("SELECT count FROM thanks WHERE user_id = ?", (user_id,)) as cursor,
+            db.execute(
+                "SELECT count FROM thanks WHERE user_id = ?",
+                (user_id,),
+            ) as cursor,
         ):
             row = await cursor.fetchone()
             return row[0] if row else 0
@@ -207,7 +212,10 @@ class ThanksCog(
             allowed_mentions=discord.AllowedMentions(everyone=False, users=False),
         )
 
-    async def _replied_author(self, message: discord.Message) -> discord.abc.User | None:
+    async def _replied_author(
+        self,
+        message: discord.Message,
+    ) -> discord.abc.User | None:
         reference = message.reference
         if reference is None or reference.message_id is None:
             return None

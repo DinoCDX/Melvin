@@ -71,7 +71,9 @@ class StatsCog(
     async def before_daily_task(self) -> None:
         await self.bot.wait_until_ready()
         async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.execute("SELECT EXISTS (SELECT 1 FROM daily_snapshots)") as cursor:
+            async with conn.execute(
+                "SELECT EXISTS (SELECT 1 FROM daily_snapshots)",
+            ) as cursor:
                 (has_snapshot,) = await cursor.fetchone()
             if not has_snapshot:
                 await self._snapshot(conn)
@@ -102,7 +104,9 @@ class StatsCog(
                 snapshot = await cursor.fetchone()
 
         daily_installs_delta = (
-            guild_installs - snapshot[0] + user_installs - snapshot[1] if snapshot else 0
+            guild_installs - snapshot[0] + user_installs - snapshot[1]
+            if snapshot
+            else 0
         )
 
         await interaction.response.send_message(

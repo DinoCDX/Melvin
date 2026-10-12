@@ -33,7 +33,10 @@ class ToggleButton(discord.ui.Button["ModulesView"]):
     async def callback(self, interaction: discord.Interaction) -> None:
         permissions = getattr(interaction.user, "guild_permissions", None)
         if not (permissions and permissions.manage_guild):
-            await _reply_error(interaction, "**You do not have permission to do this.**")
+            await _reply_error(
+                interaction,
+                "**You do not have permission to do this.**",
+            )
             return
 
         try:
@@ -70,7 +73,11 @@ class ModulesView(discord.ui.LayoutView):
             container.add_item(
                 discord.ui.Section(
                     f"**{label}**\n-# {description}",
-                    accessory=ToggleButton(guild_id, module, enabled=module not in disabled),
+                    accessory=ToggleButton(
+                        guild_id,
+                        module,
+                        enabled=module not in disabled,
+                    ),
                 ),
             )
         self.add_item(container)

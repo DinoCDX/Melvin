@@ -1,6 +1,5 @@
 import logging
-from collections.abc import Sequence
-from datetime import datetime
+from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
@@ -11,6 +10,10 @@ import module_settings
 from globals import DATA_DIR, ERROR_MESSAGE, PRIMARY, SECONDARY, TERTIARY
 from module_registry import Module, Setting
 from ui import ErrorUI, LargeSeparator, open_config
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from datetime import datetime
 
 MODULE = Module(
     "audit",
@@ -70,7 +73,9 @@ def _changes(changes: list[str]) -> list[list[str]]:
     return [["### Changes\n" + "\n".join(changes)]]
 
 
-def _channel_display(channel: discord.abc.Messageable | discord.abc.GuildChannel) -> str:
+def _channel_display(
+    channel: discord.abc.Messageable | discord.abc.GuildChannel,
+) -> str:
     if isinstance(channel, discord.Thread):
         parent = channel.parent
         if parent is None:
@@ -169,7 +174,10 @@ class AuditCog(
         view = discord.ui.LayoutView()
         view.add_item(discord.ui.Container(*items, accent_color=color))
         try:
-            await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
+            await channel.send(
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         except discord.HTTPException:
             pass
 
@@ -194,7 +202,11 @@ class AuditCog(
         )
 
     @commands.Cog.listener()
-    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+    async def on_member_update(
+        self,
+        before: discord.Member,
+        after: discord.Member,
+    ) -> None:
         changes = []
         if before.nick != after.nick:
             changes.append(
@@ -204,9 +216,13 @@ class AuditCog(
         if before.roles != after.roles:
             before_roles, after_roles = set(before.roles), set(after.roles)
             if added := after_roles - before_roles:
-                changes.append(f"**Roles added:** {', '.join(r.mention for r in added)}")
+                changes.append(
+                    f"**Roles added:** {', '.join(r.mention for r in added)}",
+                )
             if removed := before_roles - after_roles:
-                changes.append(f"**Roles removed:** {', '.join(r.mention for r in removed)}")
+                changes.append(
+                    f"**Roles removed:** {', '.join(r.mention for r in removed)}",
+                )
 
         if before.timed_out_until != after.timed_out_until:
             changes.append(
@@ -250,7 +266,11 @@ class AuditCog(
             )
 
     @commands.Cog.listener()
-    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+    async def on_message_edit(
+        self,
+        before: discord.Message,
+        after: discord.Message,
+    ) -> None:
         if before.author.bot or not before.guild or before.content == after.content:
             return
 
@@ -304,11 +324,23 @@ class AuditCog(
             return
 
         if old is None:
-            color, title, line = ADDED, "Voice Channel Joined", f"**Channel:** {new.mention}"
+            color, title, line = (
+                ADDED,
+                "Voice Channel Joined",
+                f"**Channel:** {new.mention}",
+            )
         elif new is None:
-            color, title, line = REMOVED, "Voice Channel Left", f"**Channel:** {old.mention}"
+            color, title, line = (
+                REMOVED,
+                "Voice Channel Left",
+                f"**Channel:** {old.mention}",
+            )
         else:
-            color, title, line = UPDATED, "Voice Channel Moved", f"**Moved:** {old.mention} -> {new.mention}"
+            color, title, line = (
+                UPDATED,
+                "Voice Channel Moved",
+                f"**Moved:** {old.mention} -> {new.mention}",
+            )
 
         await self._log(
             member.guild.id,
@@ -376,7 +408,11 @@ class AuditCog(
         )
 
     @commands.Cog.listener()
-    async def on_guild_role_update(self, before: discord.Role, after: discord.Role) -> None:
+    async def on_guild_role_update(
+        self,
+        before: discord.Role,
+        after: discord.Role,
+    ) -> None:
         changes = []
         if before.name != after.name:
             changes.append(f"**Name:** **{before.name}** | **{after.name}**")

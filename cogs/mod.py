@@ -320,7 +320,11 @@ class ModCog(
             await _error(interaction, "Failed to kick that member.")
             return
 
-        await _success(interaction, "Kicked", f"{member.mention} has been kicked. Case {case_id}.")
+        await _success(
+            interaction,
+            "Kicked",
+            f"{member.mention} has been kicked. Case {case_id}.",
+        )
 
     @app_commands.command(name="ban", description="Ban a member.")
     @app_commands.describe(
@@ -354,7 +358,11 @@ class ModCog(
             await _error(interaction, "Failed to ban that member.")
             return
 
-        await _success(interaction, "Banned", f"{member.mention} has been banned. Case {case_id}.")
+        await _success(
+            interaction,
+            "Banned",
+            f"{member.mention} has been banned. Case {case_id}.",
+        )
 
     @app_commands.command(name="unban", description="Unban a user.")
     @app_commands.describe(
@@ -393,7 +401,11 @@ class ModCog(
             return
 
         case_id = await self._add_case(interaction, user.id, "unban", reason)
-        await _success(interaction, "Unbanned", f"{user.mention} has been unbanned. Case {case_id}.")
+        await _success(
+            interaction,
+            "Unbanned",
+            f"{user.mention} has been unbanned. Case {case_id}.",
+        )
 
     @app_commands.command(name="mute", description="Mute a member.")
     @app_commands.describe(
@@ -436,7 +448,11 @@ class ModCog(
 
         case_id = await self._add_case(interaction, member.id, "mute", reason)
         await self.handle_dm(member, "mute", case_id, interaction.guild.name, reason)
-        await _success(interaction, "Muted", f"{member.mention} has been muted. Case {case_id}.")
+        await _success(
+            interaction,
+            "Muted",
+            f"{member.mention} has been muted. Case {case_id}.",
+        )
 
     @app_commands.command(name="unmute", description="Unmute a member.")
     @app_commands.describe(
@@ -461,7 +477,10 @@ class ModCog(
             member.top_role >= interaction.user.top_role
             and interaction.user.id != interaction.guild.owner_id
         ):
-            await _error(interaction, "You tried to unmute someone equal to or above you.")
+            await _error(
+                interaction,
+                "You tried to unmute someone equal to or above you.",
+            )
             return
 
         try:
@@ -476,7 +495,11 @@ class ModCog(
 
         case_id = await self._add_case(interaction, member.id, "unmute", reason)
         await self.handle_dm(member, "unmute", case_id, interaction.guild.name, reason)
-        await _success(interaction, "Unmuted", f"{member.mention} has been unmuted. Case {case_id}.")
+        await _success(
+            interaction,
+            "Unmuted",
+            f"{member.mention} has been unmuted. Case {case_id}.",
+        )
 
     async def _set_locked(
         self,
@@ -500,7 +523,9 @@ class ModCog(
             if target.locked == locked:
                 await _error(
                     interaction,
-                    "This thread is already locked." if locked else "This thread is not locked.",
+                    "This thread is already locked."
+                    if locked
+                    else "This thread is not locked.",
                 )
                 return None
             await target.edit(locked=locked, reason=audit_reason)
@@ -511,7 +536,9 @@ class ModCog(
         if (overwrite.send_messages is False) == locked:
             await _error(
                 interaction,
-                "This channel is already locked." if locked else "This channel is not locked.",
+                "This channel is already locked."
+                if locked
+                else "This channel is not locked.",
             )
             return None
 
@@ -598,7 +625,9 @@ class ModCog(
         if role.is_default():
             error = "You cannot modify the @everyone role."
         elif role.is_premium_subscriber():
-            error = "You cannot add the server booster role; Discord gives it to boosters."
+            error = (
+                "You cannot add the server booster role; Discord gives it to boosters."
+            )
         elif member.bot:
             error = "You tried to add a role to an app."
         elif role in member.roles:

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import operator
 from datetime import UTC, datetime
 from itertools import groupby
 
@@ -133,7 +134,11 @@ async def init_db() -> None:
     _db_ready = True
 
 
-async def record_latency(shard_id: int, latency_ms: float, api_latency_ms: float) -> None:
+async def record_latency(
+    shard_id: int,
+    latency_ms: float,
+    api_latency_ms: float,
+) -> None:
     await init_db()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -202,11 +207,11 @@ def summarize_status(shards: list[dict]) -> dict[str, str]:
 def _build_shard(shard_id: int, rows: list[aiosqlite.Row], uptime: str) -> dict:
     gateway_history = [row["latency_ms"] for row in rows]
     api_history = [row["api_latency_ms"] or 0.0 for row in rows]
-    lo = min(min(gateway_history), min(api_history))
-    hi = max(max(gateway_history), max(api_history))
+    lo = min(*gateway_history, *api_history)
+    hi = max(*gateway_history, *api_history)
     gateway_ys = charts.scale(gateway_history, lo, hi, CHART_HEIGHT)
     api_ys = charts.scale(api_history, lo, hi, CHART_HEIGHT)
-    peak_ys = [min(g, a) for g, a in zip(gateway_ys, api_ys, strict=True)]
+    peak_ys = list(map(min, gateway_ys, api_ys, strict=True))
     latest = rows[-1]
     latency_ms = round(gateway_history[-1])
     api_latency_ms = round(api_history[-1])
@@ -263,7 +268,7 @@ async def get_shard_status() -> list[dict]:
             all_rows = await cursor.fetchall()
 
     shards = []
-    for shard_id, group in groupby(all_rows, key=lambda row: row["shard_id"]):
+    for shard_id, group in groupby(all_rows, key=operator.itemgetter("shard_id")):
         rows = [row for row in group if math.isfinite(row["latency_ms"])]
         if rows:
             shards.append(_build_shard(shard_id, rows, uptime))

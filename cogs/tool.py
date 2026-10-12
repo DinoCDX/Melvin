@@ -4,7 +4,7 @@ import logging
 import random
 import re
 import urllib.parse
-from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import aiohttp
 import discord
@@ -21,6 +21,9 @@ from ui import (
     ResponseUI,
     SmallSeparator,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 MODULE = Module(
     "tool",
@@ -93,9 +96,15 @@ def _base32_decode(text: str) -> bytes:
 
 def _morse_encode(text: str) -> str:
     upper = text.upper()
-    unknown = sorted({char for char in upper if char not in MORSE and not char.isspace()})
+    unknown = sorted(
+        {char for char in upper if char not in MORSE and not char.isspace()},
+    )
     if unknown:
-        listed = unknown[0] if len(unknown) == 1 else ", ".join(unknown[:-1]) + " and " + unknown[-1]
+        listed = (
+            unknown[0]
+            if len(unknown) == 1
+            else ", ".join(unknown[:-1]) + " and " + unknown[-1]
+        )
         msg = f"{listed} can't be written in Morse."
         raise CodecError(msg)
     return " / ".join(" ".join(MORSE[char] for char in word) for word in upper.split())
@@ -104,7 +113,9 @@ def _morse_encode(text: str) -> str:
 def _morse_decode(text: str) -> str:
     words = [word.split() for word in text.split("/")]
     try:
-        return " ".join("".join(MORSE_REVERSE[code] for code in word) for word in words if word)
+        return " ".join(
+            "".join(MORSE_REVERSE[code] for code in word) for word in words if word
+        )
     except KeyError:
         raise ValueError from None
 
@@ -328,14 +339,20 @@ class WikiView(discord.ui.LayoutView):
                 ),
             ),
             SmallSeparator(),
-            discord.ui.Section(body, accessory=discord.ui.Thumbnail(thumbnail["source"]))
+            discord.ui.Section(
+                body,
+                accessory=discord.ui.Thumbnail(thumbnail["source"]),
+            )
             if thumbnail
             else body,
             SmallSeparator(),
         )
 
         if self.random_mode:
-            another = discord.ui.Button(label="Another", style=discord.ButtonStyle.secondary)
+            another = discord.ui.Button(
+                label="Another",
+                style=discord.ButtonStyle.secondary,
+            )
             another.callback = self.another
             container.add_item(discord.ui.ActionRow(another))
 
@@ -350,11 +367,17 @@ class WikiView(discord.ui.LayoutView):
             page = None
 
         if page is None:
-            await interaction.followup.send(view=ErrorUI(WIKI_UNREACHABLE), ephemeral=True)
+            await interaction.followup.send(
+                view=ErrorUI(WIKI_UNREACHABLE),
+                ephemeral=True,
+            )
             return
 
         self.show(page)
-        await interaction.edit_original_response(view=self, allowed_mentions=NO_MENTIONS)
+        await interaction.edit_original_response(
+            view=self,
+            allowed_mentions=NO_MENTIONS,
+        )
 
     async def on_timeout(self) -> None:
         for item in self.walk_children():
@@ -478,7 +501,9 @@ class ToolCog(
 
         container = discord.ui.Container(discord.ui.TextDisplay(text))
         if attachment is not None:
-            container.add_item(GalleryWithItem(f"attachment://{kwargs['file'].filename}"))
+            container.add_item(
+                GalleryWithItem(f"attachment://{kwargs['file'].filename}"),
+            )
         view = discord.ui.LayoutView()
         view.add_item(container)
         await interaction.followup.send(view=view, **kwargs)
@@ -506,7 +531,9 @@ class ToolCog(
         entries = data.get("list", [])
         if not entries:
             await interaction.followup.send(
-                view=ErrorUI(f"**No definitions found for `{word.replace('`', '')}`.**"),
+                view=ErrorUI(
+                    f"**No definitions found for `{word.replace('`', '')}`.**",
+                ),
                 ephemeral=True,
             )
             return

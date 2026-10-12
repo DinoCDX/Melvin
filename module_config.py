@@ -67,7 +67,9 @@ def clean_value(setting: Setting, raw: str | None) -> str | None:
 
     match setting.kind:
         case "channels":
-            ids = list(dict.fromkeys(part for part in re.split(r"[\s,]+", value) if part))
+            ids = list(
+                dict.fromkeys(part for part in re.split(r"[\s,]+", value) if part),
+            )
             if not all(SNOWFLAKE_PATTERN.match(part) for part in ids):
                 _fail("That isn't a valid list of channels.")
             if len(ids) > MAX_CHANNELS:
@@ -81,7 +83,9 @@ def clean_value(setting: Setting, raw: str | None) -> str | None:
                 _fail(f"That isn't one of the options for {setting.label}.")
         case "text":
             if len(value) > setting.max_length:
-                _fail(f"{setting.label} can be at most {setting.max_length} characters.")
+                _fail(
+                    f"{setting.label} can be at most {setting.max_length} characters.",
+                )
         case "url":
             if not value.startswith(("http://", "https://")) or " " in value:
                 _fail("Links must start with http:// or https://.")

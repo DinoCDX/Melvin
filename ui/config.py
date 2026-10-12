@@ -121,7 +121,11 @@ class ConfigView(discord.ui.LayoutView):
             case "choice":
                 select = discord.ui.Select(
                     options=[
-                        discord.SelectOption(label=label, value=key, default=key == value)
+                        discord.SelectOption(
+                            label=label,
+                            value=key,
+                            default=key == value,
+                        )
                         for key, label in setting.choices
                     ],
                 )

@@ -1,5 +1,5 @@
-from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import aiosqlite
 import discord
@@ -22,6 +22,9 @@ from globals import (
     THUMBS_UP,
     WEBSITE_URL,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 HIDDEN_COGS = frozenset({"private"})
 CORE_PAGE = "melvin"
@@ -108,7 +111,9 @@ def help_pages(
             key,
             (key.title(), cog.__cog_group_description__),
         )
-        pages.append(HelpPage(key, label, "" if description == "…" else description, cmds))
+        pages.append(
+            HelpPage(key, label, "" if description == "…" else description, cmds),
+        )
     pages.sort(key=lambda page: page.label.lower())
 
     core = tuple(
@@ -317,7 +322,11 @@ class CasesView(discord.ui.LayoutView):
         self.container.add_item(SmallSeparator())
 
         if not rows:
-            suffix = "" if self.current_action == "all" else f" under filter {self.current_action}"
+            suffix = (
+                ""
+                if self.current_action == "all"
+                else f" under filter {self.current_action}"
+            )
             self.container.add_item(
                 discord.ui.TextDisplay(f"**No cases found for {who}{suffix}.**"),
             )
@@ -398,4 +407,3 @@ class ErrorUI(_Card):
 class ExceptionUI(ErrorUI):
     def __init__(self) -> None:
         super().__init__(ERROR_MESSAGE)
-

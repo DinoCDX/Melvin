@@ -41,7 +41,11 @@ LINK_BUTTONS = (
         "https://discord.com/oauth2/authorize?client_id=1468362201197973756",
         "<:pluscircleduotone:1548410107484835942>",
     ),
-    ("Support", "https://discord.gg/PfyKM7dyx4", "<:questionduotone:1548410071195844668>"),
+    (
+        "Support",
+        "https://discord.gg/PfyKM7dyx4",
+        "<:questionduotone:1548410071195844668>",
+    ),
     ("Website", WEBSITE_URL, "<:browsersduotone:1548410087037477066>"),
     ("Status", f"{WEBSITE_URL}/status", "<:browsersduotone:1548410087037477066>"),
     (

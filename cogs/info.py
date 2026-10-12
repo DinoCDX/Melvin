@@ -1,4 +1,4 @@
-from datetime import datetime
+from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
@@ -6,6 +6,9 @@ from discord.ext import commands
 
 from module_registry import Module
 from ui import ErrorUI, GalleryWithItem, Paginator, SmallSeparator
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 MODULE = Module(
     "info",
@@ -21,7 +24,10 @@ TYPE_CHOICES = [
 VERIFICATION_LEVELS = {
     discord.VerificationLevel.none: ("None", "Unrestricted"),
     discord.VerificationLevel.low: ("Low", "Must have a verified email"),
-    discord.VerificationLevel.medium: ("Medium", "Registered on Discord for 5+ minutes"),
+    discord.VerificationLevel.medium: (
+        "Medium",
+        "Registered on Discord for 5+ minutes",
+    ),
     discord.VerificationLevel.high: ("High", "Member of the server for 10+ minutes"),
     discord.VerificationLevel.highest: ("Highest", "Must have a verified phone number"),
 }
@@ -88,7 +94,11 @@ class AssetView(discord.ui.LayoutView):
         super().__init__()
 
         if custom:
-            formats = ("png", "jpg", "webp", "gif") if asset.is_animated() else ("png", "jpg", "webp")
+            formats = (
+                ("png", "jpg", "webp", "gif")
+                if asset.is_animated()
+                else ("png", "jpg", "webp")
+            )
             links = [(fmt, asset.with_format(fmt).url) for fmt in formats]
         else:
             links = [("Web", asset.url)]
@@ -100,7 +110,11 @@ class AssetView(discord.ui.LayoutView):
                 GalleryWithItem(asset.url),
                 discord.ui.ActionRow(
                     *(
-                        discord.ui.Button(label=label, style=discord.ButtonStyle.link, url=url)
+                        discord.ui.Button(
+                            label=label,
+                            style=discord.ButtonStyle.link,
+                            url=url,
+                        )
                         for label, url in links
                     ),
                 ),
@@ -114,7 +128,9 @@ def _role_mention(role: discord.Role) -> str:
 
 def _role_color(role: discord.Role, *, enhanced: bool) -> str:
     if enhanced and role.tertiary_color is not None:
-        return f"{role.color}-{role.secondary_color}-{role.tertiary_color} | Holographic"
+        return (
+            f"{role.color}-{role.secondary_color}-{role.tertiary_color} | Holographic"
+        )
     if enhanced and role.secondary_color is not None:
         return f"{role.color}-{role.secondary_color} | Gradient"
     return f"{role.color} | Solid"
@@ -170,7 +186,9 @@ class RoleInfoView(discord.ui.LayoutView):
                 _created(role.created_at),
             ),
         )
-        icon = role.display_icon if isinstance(role.display_icon, discord.Asset) else None
+        icon = (
+            role.display_icon if isinstance(role.display_icon, discord.Asset) else None
+        )
 
         container = discord.ui.Container(
             discord.ui.TextDisplay(f"### {_role_mention(role)} | {role.id}"),
@@ -224,19 +242,25 @@ class ServerInfoView(discord.ui.LayoutView):
         details = "\n".join(
             (
                 f"**Owner:** {owner.mention} | {owner.id}",
-                f"**Icon:** [Icon Link]({guild.icon.url})" if guild.icon else "**Icon:** None",
+                f"**Icon:** [Icon Link]({guild.icon.url})"
+                if guild.icon
+                else "**Icon:** None",
                 f"**Verification:** {level} | {requirement}",
                 f"**2FA:** {'Enabled' if guild.mfa_level else 'Disabled'}",
                 f"**Roles:** {len(guild.roles)}",
                 f"**Members:** {member_total - bots} humans, {bots} bots | {member_total} total",
-                f"**Channels:** {len(guild.text_channels)} text, "
-                f"{len(guild.voice_channels)} voice, "
-                f"{len(guild.categories)} categories, "
-                f"{len(guild.stage_channels)} stage, "
-                f"{len(guild.forums)} forums | "
-                f"{len(guild.channels)} total",
-                f"**Server Boosts:** Level {guild.premium_tier} | "
-                f"{guild.premium_subscription_count} boosts total",
+                (
+                    f"**Channels:** {len(guild.text_channels)} text, "
+                    f"{len(guild.voice_channels)} voice, "
+                    f"{len(guild.categories)} categories, "
+                    f"{len(guild.stage_channels)} stage, "
+                    f"{len(guild.forums)} forums | "
+                    f"{len(guild.channels)} total"
+                ),
+                (
+                    f"**Server Boosts:** Level {guild.premium_tier} | "
+                    f"{guild.premium_subscription_count} boosts total"
+                ),
                 f"**Vanity Link:** {guild.vanity_url or 'None'}",
                 _created(guild.created_at),
             ),
@@ -246,7 +270,9 @@ class ServerInfoView(discord.ui.LayoutView):
             (label for feature, label in SERVER_TYPES if feature in guild.features),
             None,
         )
-        title = " | ".join(str(part) for part in (guild.name, server_type, guild.id) if part)
+        title = " | ".join(
+            str(part) for part in (guild.name, server_type, guild.id) if part
+        )
 
         container = discord.ui.Container(
             discord.ui.TextDisplay(f"### {title}"),
@@ -348,14 +374,20 @@ class InfoCog(
         banner = (await self.bot.fetch_user(target.id)).banner
         if banner is None:
             await interaction.followup.send(
-                view=ErrorUI(f"{_subject(interaction, target)} not have a profile banner."),
+                view=ErrorUI(
+                    f"{_subject(interaction, target)} not have a profile banner.",
+                ),
                 ephemeral=True,
                 allowed_mentions=NO_MENTIONS,
             )
             return
 
         await interaction.followup.send(
-            view=AssetView(f"{_possessive(interaction, target)} Banner", banner, custom=True),
+            view=AssetView(
+                f"{_possessive(interaction, target)} Banner",
+                banner,
+                custom=True,
+            ),
             allowed_mentions=NO_MENTIONS,
         )
 

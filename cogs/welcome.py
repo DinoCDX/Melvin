@@ -78,9 +78,14 @@ async def safe_finish(
             **({"attachments": [file]} if file is not None else {}),
         )
     except discord.NotFound:
-        log.warning("Original interaction response missing; falling back to followup.send")
+        log.warning(
+            "Original interaction response missing; falling back to followup.send",
+        )
         try:
-            await interaction.followup.send(view=view, **({"file": file} if file is not None else {}))
+            await interaction.followup.send(
+                view=view,
+                **({"file": file} if file is not None else {}),
+            )
         except discord.HTTPException:
             log.exception("Followup send also failed")
 
@@ -211,7 +216,10 @@ class WelcomeCog(
 
         view, file = _build_welcome_ui(values, member)
         try:
-            await channel.send(view=view, **({"file": file} if file is not None else {}))
+            await channel.send(
+                view=view,
+                **({"file": file} if file is not None else {}),
+            )
         except discord.HTTPException:
             pass
 

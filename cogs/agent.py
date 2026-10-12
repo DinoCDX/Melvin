@@ -38,7 +38,9 @@ SYSTEM_PROMPT = (
     "Contain responses in short, yet informative paragraphs, rather than graphs or tables or bulletpoints. "
     "Refrain from using emojis unless told to. "
 )
-SEARCH_PROMPT = "Use the provided search context to ground your answer relative to today's date. "
+SEARCH_PROMPT = (
+    "Use the provided search context to ground your answer relative to today's date. "
+)
 
 
 def paginate(text: str, size: int = PAGE_SIZE) -> list[str]:

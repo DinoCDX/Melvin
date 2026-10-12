@@ -88,11 +88,18 @@ class PrivateCog(
         channel = self.bot.get_channel(LOG_CHANNEL)
         return channel if isinstance(channel, discord.TextChannel) else None
 
-    async def _log(self, channel: discord.TextChannel, container: discord.ui.Container) -> None:
+    async def _log(
+        self,
+        channel: discord.TextChannel,
+        container: discord.ui.Container,
+    ) -> None:
         view = discord.ui.LayoutView()
         view.add_item(container)
         try:
-            await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
+            await channel.send(
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         except discord.HTTPException:
             pass
 

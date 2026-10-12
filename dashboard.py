@@ -1006,7 +1006,7 @@ async def server_stats_page(guild_id: int) -> str | Response:
     top = max(*messages, *voice, 1)
     message_ys = charts.scale(messages, 0, top, height)
     voice_ys = charts.scale(voice, 0, top, height)
-    peak_ys = [min(m, v) for m, v in zip(message_ys, voice_ys, strict=True)]
+    peak_ys = list(map(min, message_ys, voice_ys, strict=True))
 
     # the member scale fits the counts, like the status charts, so changes are visible.
     # periods before the first reading use the first reading
