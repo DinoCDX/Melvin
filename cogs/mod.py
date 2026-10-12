@@ -29,8 +29,58 @@ MODULE = Module(
 
 log = logging.getLogger(__name__)
 
+NO_PINGS = discord.AllowedMentions(users=False, roles=False)
+DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+MAX_MUTE_SECONDS = 28 * 86400
+Lockable = discord.TextChannel | discord.VoiceChannel | discord.Thread
 
-# server only, installed to a server and used in it, never in dms or as a user app
+
+async def _error(interaction: discord.Interaction, message: str) -> None:
+    await interaction.followup.send(view=ErrorUI(f"**{message}**"))
+
+
+async def _success(
+    interaction: discord.Interaction,
+    title: str,
+    subtitle: str,
+    mentions: discord.AllowedMentions = NO_PINGS,
+) -> None:
+    await interaction.followup.send(
+        view=PositiveUI(title=title, subtitle=f"**{subtitle}**"),
+        allowed_mentions=mentions,
+    )
+
+
+def _target_error(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    verb: str,
+    *,
+    check_bot: bool = True,
+) -> str | None:
+    guild, user = interaction.guild, interaction.user
+    if member.bot:
+        return f"You tried to {verb} an app."
+    if member.id == user.id:
+        return f"You tried to {verb} yourself."
+    if member.id == guild.owner_id:
+        return f"You tried to {verb} the guild owner."
+    if member.top_role >= user.top_role and user.id != guild.owner_id:
+        return f"You tried to {verb} someone equal to or above you."
+    if check_bot and member.top_role >= guild.me.top_role:
+        return f"I tried to {verb} someone equal to or above me."
+    return None
+
+
+def _role_error(interaction: discord.Interaction, role: discord.Role) -> str | None:
+    guild, user = interaction.guild, interaction.user
+    if role.position >= user.top_role.position and user.id != guild.owner_id:
+        return "You tried to manage a role equal to or above your top role."
+    if role.position >= guild.me.top_role.position:
+        return "I tried to manage a role equal to or above my top role."
+    return None
+
+
 @app_commands.allowed_installs(guilds=True, users=False)
 @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 class ModCog(
@@ -47,19 +97,16 @@ class ModCog(
     cases = app_commands.Group(name="case", description="Moderation case commands.")
 
     def parse_duration(self, durationstr: str) -> int | None:
-        unit = durationstr[-1].lower()
-        if unit not in {"s", "m", "h", "d"}:
+        multiplier = DURATION_UNITS.get(durationstr[-1:].lower())
+        if multiplier is None:
             return None
         try:
             value = int(durationstr[:-1])
-            if value <= 0:
-                return None
         except ValueError:
             return None
-        multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-        return value * multipliers[unit]
+        return value * multiplier if value > 0 else None
 
-    async def _ensure_db(self) -> None:
+    async def cog_load(self) -> None:
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
                 """
@@ -75,6 +122,35 @@ class ModCog(
                 """,
             )
             await conn.commit()
+        await module_config.migrate_legacy(
+            self.db_path,
+            "auto_roles",
+            "mod",
+            lambda row: (int(row[0]), {"auto_role": str(row[1])}),
+        )
+
+    async def _add_case(
+        self,
+        interaction: discord.Interaction,
+        user_id: int,
+        action: str,
+        reason: str,
+    ) -> int:
+        async with aiosqlite.connect(self.db_path) as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO mod_cases (guild_id, user_id, mod_id, action_type, reason)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (interaction.guild_id, user_id, interaction.user.id, action, reason),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def _delete_case(self, case_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute("DELETE FROM mod_cases WHERE case_id = ?", (case_id,))
+            await conn.commit()
 
     async def handle_dm(
         self,
@@ -84,26 +160,16 @@ class ModCog(
         guild_name: str,
         reason: str,
     ) -> None:
-        view = InfoUI(
-            title=f"You received a {action_type} in {guild_name}.",
-            subtitle=f"Reason: {reason}. Case {case_id}",
-        )
         try:
             await user.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions(users=False, roles=False),
+                view=InfoUI(
+                    title=f"You received a {action_type} in {guild_name}.",
+                    subtitle=f"Reason: {reason}. Case {case_id}",
+                ),
+                allowed_mentions=NO_PINGS,
             )
         except discord.HTTPException:
             pass
-
-    async def cog_load(self) -> None:
-        await self._ensure_db()
-        await module_config.migrate_legacy(
-            self.db_path,
-            "auto_roles",
-            "mod",
-            lambda row: (int(row[0]), {"auto_role": str(row[1])}),
-        )
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
@@ -133,7 +199,6 @@ class ModCog(
             message = "**An unexpected error occurred.**"
 
         view = ErrorUI(message)
-
         if interaction.response.is_done():
             await interaction.followup.send(view=view, ephemeral=True)
         else:
@@ -151,25 +216,19 @@ class ModCog(
         target: discord.User | discord.Member,
     ) -> None:
         await interaction.response.defer()
-        if not interaction.client.user:
-            return
-        if not interaction.guild:
+        if not interaction.client.user or not interaction.guild:
             return
         if target.bot:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to view the cases of an app.**"),
-            )
+            await _error(interaction, "You tried to view the cases of an app.")
             return
+
         view = CasesView(target_user=target, db_path=self.db_path)
         await view.build_components(
             interaction.guild.id,
             interaction.user,
             interaction.client.user,
         )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
-        )
+        await interaction.followup.send(view=view, allowed_mentions=NO_PINGS)
 
     @cases.command(
         name="remove",
@@ -184,31 +243,23 @@ class ModCog(
 
         async with aiosqlite.connect(self.db_path) as conn:
             async with conn.execute(
-                "SELECT user_id, action_type FROM mod_cases WHERE guild_id = ? AND case_id = ?",
+                "DELETE FROM mod_cases WHERE guild_id = ? AND case_id = ? "
+                "RETURNING user_id, action_type",
                 (interaction.guild_id, case_id),
             ) as cursor:
                 case = await cursor.fetchone()
-
-            if not case:
-                await interaction.followup.send(
-                    view=ErrorUI(f"**Case #{case_id} was not found in this server.**"),
-                )
-                return
-
-            user_id, action_type = case
-            await conn.execute(
-                "DELETE FROM mod_cases WHERE guild_id = ? AND case_id = ?",
-                (interaction.guild_id, case_id),
-            )
             await conn.commit()
 
-        view = PositiveUI(
-            title="Case Removed",
-            subtitle=f"**Removed case #{case_id} ({action_type.upper()}) for <@{user_id}>.**",
-        )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions.none(),
+        if not case:
+            await _error(interaction, f"Case #{case_id} was not found in this server.")
+            return
+
+        user_id, action_type = case
+        await _success(
+            interaction,
+            "Case Removed",
+            f"Removed case #{case_id} ({action_type.upper()}) for <@{user_id}>.",
+            discord.AllowedMentions.none(),
         )
 
     @app_commands.command(name="warn", description="Warn someone.")
@@ -224,60 +275,18 @@ class ModCog(
         reason: str = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
-
-        if member.bot:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to warn an app.**"),
-            )
-            return
-        if member.id == interaction.user.id:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to warn yourself.**"),
-            )
-            return
-        if member.id == interaction.guild.owner_id:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to warn the guild owner.**"),
-            )
-            return
-        if (
-            member.top_role >= interaction.user.top_role
-            and interaction.user.id != interaction.guild.owner_id
-        ):
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to warn someone equal to or above you.**"),
-            )
+        if error := _target_error(interaction, member, "warn", check_bot=False):
+            await _error(interaction, error)
             return
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO mod_cases (guild_id, user_id, mod_id, action_type, reason)
-                VALUES (?, ?, ?, 'warn', ?)
-                """,
-                (interaction.guild_id, member.id, interaction.user.id, reason),
-            )
-            case_id = cursor.lastrowid
-            await conn.commit()
-
-        await self.handle_dm(
-            user=member,
-            action_type="warning",
-            case_id=case_id,
-            guild_name=interaction.guild.name,
-            reason=reason,
-        )
-
-        view = PositiveUI(
-            title="Warning",
-            subtitle=f"**{member.mention}, you have been warned. Case {case_id}.**",
-        )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
+        case_id = await self._add_case(interaction, member.id, "warn", reason)
+        await self.handle_dm(member, "warning", case_id, interaction.guild.name, reason)
+        await _success(
+            interaction,
+            "Warning",
+            f"{member.mention}, you have been warned. Case {case_id}.",
         )
 
     @app_commands.command(name="kick", description="Kick a member.")
@@ -293,84 +302,25 @@ class ModCog(
         reason: str = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
-
-        if member.bot:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to kick an app.**"),
-            )
-            return
-        if member.id == interaction.user.id:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to kick yourself.**"),
-            )
-            return
-        if member.id == interaction.guild.owner_id:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to kick the guild owner.**"),
-            )
-            return
-        if (
-            member.top_role >= interaction.user.top_role
-            and interaction.user.id != interaction.guild.owner_id
-        ):
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to kick someone equal to or above you.**"),
-            )
-            return
-        if member.top_role >= interaction.guild.me.top_role:
-            await interaction.followup.send(
-                view=ErrorUI("**I tried to kick someone equal to or above me.**"),
-            )
+        if error := _target_error(interaction, member, "kick"):
+            await _error(interaction, error)
             return
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO mod_cases (guild_id, user_id, mod_id, action_type, reason)
-                VALUES (?, ?, ?, 'kick', ?)
-                """,
-                (interaction.guild_id, member.id, interaction.user.id, reason),
-            )
-            case_id = cursor.lastrowid
-            await conn.commit()
-
-        await self.handle_dm(
-            user=member,
-            action_type="kick",
-            case_id=case_id,
-            guild_name=interaction.guild.name,
-            reason=reason,
-        )
-
-        # if the kick fails, the case is deleted
+        case_id = await self._add_case(interaction, member.id, "kick", reason)
+        await self.handle_dm(member, "kick", case_id, interaction.guild.name, reason)
         try:
             await member.kick(
                 reason=f"Kicked by Melvin using {interaction.user.name} with the reason: {reason}",
             )
         except discord.HTTPException:
             log.exception("Moderation action failed")
-            async with aiosqlite.connect(self.db_path) as conn:
-                await conn.execute(
-                    "DELETE FROM mod_cases WHERE case_id = ?",
-                    (case_id,),
-                )
-                await conn.commit()
-            await interaction.followup.send(
-                view=ErrorUI("**Failed to kick that member.**"),
-            )
+            await self._delete_case(case_id)
+            await _error(interaction, "Failed to kick that member.")
             return
 
-        view = PositiveUI(
-            title="Kicked",
-            subtitle=f"**{member.mention} has been kicked. Case {case_id}.**",
-        )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
-        )
+        await _success(interaction, "Kicked", f"{member.mention} has been kicked. Case {case_id}.")
 
     @app_commands.command(name="ban", description="Ban a member.")
     @app_commands.describe(
@@ -385,59 +335,14 @@ class ModCog(
         reason: str = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
-
-        if member.bot:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to ban an app.**"),
-            )
-            return
-        if member.id == interaction.user.id:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to ban yourself.**"),
-            )
-            return
-        if member.id == interaction.guild.owner_id:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to ban the guild owner.**"),
-            )
-            return
-        if (
-            member.top_role >= interaction.user.top_role
-            and interaction.user.id != interaction.guild.owner_id
-        ):
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to ban someone equal to or above you.**"),
-            )
-            return
-        if member.top_role >= interaction.guild.me.top_role:
-            await interaction.followup.send(
-                view=ErrorUI("**I tried to ban someone equal to or above me.**"),
-            )
+        if error := _target_error(interaction, member, "ban"):
+            await _error(interaction, error)
             return
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO mod_cases (guild_id, user_id, mod_id, action_type, reason)
-                VALUES (?, ?, ?, 'ban', ?)
-                """,
-                (interaction.guild_id, member.id, interaction.user.id, reason),
-            )
-            case_id = cursor.lastrowid
-            await conn.commit()
-
-        await self.handle_dm(
-            user=member,
-            action_type="ban",
-            case_id=case_id,
-            guild_name=interaction.guild.name,
-            reason=reason,
-        )
-
-        # if the ban fails, the case is deleted
+        case_id = await self._add_case(interaction, member.id, "ban", reason)
+        await self.handle_dm(member, "ban", case_id, interaction.guild.name, reason)
         try:
             await member.ban(
                 reason=f"Banned by Melvin using {interaction.user.name} with the reason: {reason}",
@@ -445,25 +350,11 @@ class ModCog(
             )
         except discord.HTTPException:
             log.exception("Moderation action failed")
-            async with aiosqlite.connect(self.db_path) as conn:
-                await conn.execute(
-                    "DELETE FROM mod_cases WHERE case_id = ?",
-                    (case_id,),
-                )
-                await conn.commit()
-            await interaction.followup.send(
-                view=ErrorUI("**Failed to ban that member.**"),
-            )
+            await self._delete_case(case_id)
+            await _error(interaction, "Failed to ban that member.")
             return
 
-        view = PositiveUI(
-            title="Banned",
-            subtitle=f"**{member.mention} has been banned. Case {case_id}.**",
-        )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
-        )
+        await _success(interaction, "Banned", f"{member.mention} has been banned. Case {case_id}.")
 
     @app_commands.command(name="unban", description="Unban a user.")
     @app_commands.describe(
@@ -478,22 +369,17 @@ class ModCog(
         reason: str = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
 
         try:
             await interaction.guild.fetch_ban(user)
         except discord.NotFound:
-            await interaction.followup.send(
-                view=ErrorUI("**That user is not banned.**"),
-            )
+            await _error(interaction, "That user is not banned.")
             return
         except discord.HTTPException:
             log.exception("Moderation action failed")
-            await interaction.followup.send(
-                view=ErrorUI("**Failed to check ban status.**"),
-            )
+            await _error(interaction, "Failed to check ban status.")
             return
 
         try:
@@ -503,30 +389,11 @@ class ModCog(
             )
         except discord.HTTPException:
             log.exception("Moderation action failed")
-            await interaction.followup.send(
-                view=ErrorUI("**Failed to unban that user.**"),
-            )
+            await _error(interaction, "Failed to unban that user.")
             return
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO mod_cases (guild_id, user_id, mod_id, action_type, reason)
-                VALUES (?, ?, ?, 'unban', ?)
-                """,
-                (interaction.guild_id, user.id, interaction.user.id, reason),
-            )
-            case_id = cursor.lastrowid
-            await conn.commit()
-
-        view = PositiveUI(
-            title="Unbanned",
-            subtitle=f"**{user.mention} has been unbanned. Case {case_id}.**",
-        )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
-        )
+        case_id = await self._add_case(interaction, user.id, "unban", reason)
+        await _success(interaction, "Unbanned", f"{user.mention} has been unbanned. Case {case_id}.")
 
     @app_commands.command(name="mute", description="Mute a member.")
     @app_commands.describe(
@@ -543,90 +410,33 @@ class ModCog(
         reason: str = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
 
         seconds = self.parse_duration(duration)
         if not seconds:
-            await interaction.followup.send(
-                view=ErrorUI("**Not a valid duration format.**"),
-            )
-            return
-        if seconds > 28 * 86400:
-            await interaction.followup.send(
-                view=ErrorUI("**Duration cannot surpass 28 days.**"),
-            )
-            return
-        if member.bot:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to mute an app.**"),
-            )
-            return
-        if member.id == interaction.user.id:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to mute yourself.**"),
-            )
-            return
-        if member.id == interaction.guild.owner_id:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to mute the guild owner.**"),
-            )
-            return
-        if (
-            member.top_role >= interaction.user.top_role
-            and interaction.user.id != interaction.guild.owner_id
-        ):
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to mute someone equal to or above you.**"),
-            )
-            return
-        if member.top_role >= interaction.guild.me.top_role:
-            await interaction.followup.send(
-                view=ErrorUI("**I tried to mute someone equal to or above me.**"),
-            )
+            error = "Not a valid duration format."
+        elif seconds > MAX_MUTE_SECONDS:
+            error = "Duration cannot surpass 28 days."
+        else:
+            error = _target_error(interaction, member, "mute")
+        if error:
+            await _error(interaction, error)
             return
 
-        until = discord.utils.utcnow() + datetime.timedelta(seconds=seconds)
         try:
             await member.timeout(
-                until,
+                discord.utils.utcnow() + datetime.timedelta(seconds=seconds),
                 reason=f"Muted by Melvin using {interaction.user.name} with the reason: {reason}",
             )
         except discord.HTTPException:
             log.exception("Moderation action failed")
-            await interaction.followup.send(
-                view=ErrorUI("**Failed to mute that member.**"),
-            )
+            await _error(interaction, "Failed to mute that member.")
             return
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO mod_cases (guild_id, user_id, mod_id, action_type, reason)
-                VALUES (?, ?, ?, 'mute', ?)
-                """,
-                (interaction.guild_id, member.id, interaction.user.id, reason),
-            )
-            case_id = cursor.lastrowid
-            await conn.commit()
-
-        await self.handle_dm(
-            user=member,
-            action_type="mute",
-            case_id=case_id,
-            guild_name=interaction.guild.name,
-            reason=reason,
-        )
-
-        view = PositiveUI(
-            title="Muted",
-            subtitle=f"**{member.mention} has been muted. Case {case_id}.**",
-        )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
-        )
+        case_id = await self._add_case(interaction, member.id, "mute", reason)
+        await self.handle_dm(member, "mute", case_id, interaction.guild.name, reason)
+        await _success(interaction, "Muted", f"{member.mention} has been muted. Case {case_id}.")
 
     @app_commands.command(name="unmute", description="Unmute a member.")
     @app_commands.describe(
@@ -641,22 +451,17 @@ class ModCog(
         reason: str = "No reason given.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
 
         if not member.is_timed_out():
-            await interaction.followup.send(
-                view=ErrorUI("**Member is not timed out.**"),
-            )
+            await _error(interaction, "Member is not timed out.")
             return
         if (
             member.top_role >= interaction.user.top_role
             and interaction.user.id != interaction.guild.owner_id
         ):
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to unmute someone equal to or above you.**"),
-            )
+            await _error(interaction, "You tried to unmute someone equal to or above you.")
             return
 
         try:
@@ -666,38 +471,53 @@ class ModCog(
             )
         except discord.HTTPException:
             log.exception("Moderation action failed")
-            await interaction.followup.send(
-                view=ErrorUI("**Failed to unmute that member.**"),
-            )
+            await _error(interaction, "Failed to unmute that member.")
             return
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO mod_cases (guild_id, user_id, mod_id, action_type, reason)
-                VALUES (?, ?, ?, 'unmute', ?)
-                """,
-                (interaction.guild_id, member.id, interaction.user.id, reason),
+        case_id = await self._add_case(interaction, member.id, "unmute", reason)
+        await self.handle_dm(member, "unmute", case_id, interaction.guild.name, reason)
+        await _success(interaction, "Unmuted", f"{member.mention} has been unmuted. Case {case_id}.")
+
+    async def _set_locked(
+        self,
+        interaction: discord.Interaction,
+        channel: Lockable | None,
+        audit_reason: str,
+        *,
+        locked: bool,
+    ) -> Lockable | None:
+        target = channel or interaction.channel
+        if not isinstance(target, Lockable):
+            await _error(
+                interaction,
+                "This can only be used in a text channel, voice channel, or thread."
+                if locked
+                else "This can only be used in either a text channel, voice channel, or thread.",
             )
-            case_id = cursor.lastrowid
-            await conn.commit()
+            return None
 
-        await self.handle_dm(
-            user=member,
-            action_type="unmute",
-            case_id=case_id,
-            guild_name=interaction.guild.name,
-            reason=reason,
-        )
+        if isinstance(target, discord.Thread):
+            if target.locked == locked:
+                await _error(
+                    interaction,
+                    "This thread is already locked." if locked else "This thread is not locked.",
+                )
+                return None
+            await target.edit(locked=locked, reason=audit_reason)
+            return target
 
-        view = PositiveUI(
-            title="Unmuted",
-            subtitle=f"**{member.mention} has been unmuted. Case {case_id}.**",
-        )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
-        )
+        everyone = interaction.guild.default_role
+        overwrite = target.overwrites_for(everyone)
+        if (overwrite.send_messages is False) == locked:
+            await _error(
+                interaction,
+                "This channel is already locked." if locked else "This channel is not locked.",
+            )
+            return None
+
+        overwrite.send_messages = False if locked else None
+        await target.set_permissions(everyone, overwrite=overwrite, reason=audit_reason)
+        return target
 
     @app_commands.command(name="lock", description="Lock a channel.")
     @app_commands.describe(
@@ -708,66 +528,21 @@ class ModCog(
     async def lock(
         self,
         interaction: discord.Interaction,
-        channel: discord.TextChannel
-        | discord.VoiceChannel
-        | discord.Thread
-        | None = None,
+        channel: Lockable | None = None,
         reason: str = "No reason given.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild:
             return
 
-        target_channel = channel or interaction.channel
-
-        if not isinstance(
-            target_channel,
-            (discord.TextChannel, discord.VoiceChannel, discord.Thread),
-        ):
-            await interaction.followup.send(
-                view=ErrorUI(
-                    "**This can only be used in a text channel, voice channel, or thread.**",
-                ),
-            )
-            return
-
-        if isinstance(target_channel, discord.Thread):
-            if target_channel.locked:
-                await interaction.followup.send(
-                    view=ErrorUI("**This thread is already locked.**"),
-                )
-                return
-
-            await target_channel.edit(
-                locked=True,
-                reason=f"Locked using Melvin by {interaction.user.name} for the reason: {reason}",
-            )
-        else:
-            current_overwrite = target_channel.overwrites_for(
-                interaction.guild.default_role,
-            )
-            if current_overwrite.send_messages is False:
-                await interaction.followup.send(
-                    view=ErrorUI("**This channel is already locked.**"),
-                )
-                return
-
-            current_overwrite.send_messages = False
-            await target_channel.set_permissions(
-                interaction.guild.default_role,
-                overwrite=current_overwrite,
-                reason=f"Locked using Melvin by {interaction.user.name} for the reason: {reason}",
-            )
-
-        view = PositiveUI(
-            title="Locked",
-            subtitle=f"**{target_channel.mention} has been locked.**",
+        target = await self._set_locked(
+            interaction,
+            channel,
+            f"Locked using Melvin by {interaction.user.name} for the reason: {reason}",
+            locked=True,
         )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
-        )
+        if target is not None:
+            await _success(interaction, "Locked", f"{target.mention} has been locked.")
 
     @app_commands.command(name="unlock", description="Unlock a channel.")
     @app_commands.describe(
@@ -778,70 +553,26 @@ class ModCog(
     async def unlock(
         self,
         interaction: discord.Interaction,
-        channel: discord.TextChannel
-        | discord.VoiceChannel
-        | discord.Thread
-        | None = None,
+        channel: Lockable | None = None,
         reason: str = "No reason given.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild:
             return
 
-        target_channel = channel or interaction.channel
-
-        if not isinstance(
-            target_channel,
-            (discord.TextChannel, discord.VoiceChannel, discord.Thread),
-        ):
-            await interaction.followup.send(
-                view=ErrorUI(
-                    "**This can only be used in either a text channel, voice channel, or thread.**",
-                ),
-            )
-            return
-
-        if isinstance(target_channel, discord.Thread):
-            if not target_channel.locked:
-                await interaction.followup.send(
-                    view=ErrorUI("**This thread is not locked.**"),
-                )
-                return
-
-            await target_channel.edit(
-                locked=False,
-                reason=f"Unlocked using Melvin by {interaction.user.name} with the reason: {reason}",
-            )
-        else:
-            current_overwrite = target_channel.overwrites_for(
-                interaction.guild.default_role,
-            )
-            if (
-                current_overwrite.send_messages is None
-                or current_overwrite.send_messages is True
-            ):
-                await interaction.followup.send(
-                    view=ErrorUI("**This channel is not locked.**"),
-                )
-                return
-
-            # None rather than True, so the channel inherits from its category again
-            current_overwrite.send_messages = None
-            await target_channel.set_permissions(
-                interaction.guild.default_role,
-                overwrite=current_overwrite,
-                reason=f"Unlocked using Melvin by {interaction.user.name} with the reason: {reason}",
-            )
-
-        view = PositiveUI(
-            title="Unlocked",
-            subtitle=f"**Unlocked {target_channel.mention}.**",
+        target = await self._set_locked(
+            interaction,
+            channel,
+            f"Unlocked using Melvin by {interaction.user.name} with the reason: {reason}",
+            locked=False,
         )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        if target is not None:
+            await _success(
+                interaction,
+                "Unlocked",
+                f"Unlocked {target.mention}.",
+                discord.AllowedMentions.none(),
+            )
 
     @role.command(
         name="add",
@@ -861,73 +592,39 @@ class ModCog(
         reason: str = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
 
         if role.is_default():
-            await interaction.followup.send(
-                view=ErrorUI("**You cannot modify the @everyone role.**"),
-            )
-            return
-        if role.is_premium_subscriber():
-            await interaction.followup.send(
-                view=ErrorUI(
-                    "**You cannot add the server booster role; Discord gives it to boosters.**",
-                ),
-            )
-            return
-        if member.bot:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to add a role to an app.**"),
-            )
-            return
-        if role in member.roles:
-            await interaction.followup.send(
-                view=ErrorUI("**That member already has this role.**"),
-            )
-            return
-        if (
-            role.position >= interaction.user.top_role.position
-            and interaction.user.id != interaction.guild.owner_id
-        ):
-            await interaction.followup.send(
-                view=ErrorUI(
-                    "**You tried to manage a role equal to or above your top role.**",
-                ),
-            )
-            return
-        if role.position >= interaction.guild.me.top_role.position:
-            await interaction.followup.send(
-                view=ErrorUI(
-                    "**I tried to manage a role equal to or above my top role.**",
-                ),
-            )
+            error = "You cannot modify the @everyone role."
+        elif role.is_premium_subscriber():
+            error = "You cannot add the server booster role; Discord gives it to boosters."
+        elif member.bot:
+            error = "You tried to add a role to an app."
+        elif role in member.roles:
+            error = "That member already has this role."
+        else:
+            error = _role_error(interaction, role)
+        if error:
+            await _error(interaction, error)
             return
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO mod_cases (guild_id, user_id, mod_id, action_type, reason)
-                VALUES (?, ?, ?, 'role_add', ?)
-                """,
-                (interaction.guild_id, member.id, interaction.user.id, reason),
+        case_id = await self._add_case(interaction, member.id, "role_add", reason)
+        try:
+            await member.add_roles(
+                role,
+                reason=f"Role added by Melvin using {interaction.user.name} with the reason: {reason}",
             )
-            case_id = cursor.lastrowid
-            await conn.commit()
+        except discord.HTTPException:
+            log.exception("Moderation action failed")
+            await self._delete_case(case_id)
+            await _error(interaction, "Failed to add that role.")
+            return
 
-        await member.add_roles(
-            role,
-            reason=f"Role added by Melvin using {interaction.user.name} with the reason: {reason}",
-        )
-
-        view = PositiveUI(
-            title="Role Added",
-            subtitle=f"**{role.mention} added to {member.mention}. Case {case_id}.**",
-        )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
+        await _success(
+            interaction,
+            "Role Added",
+            f"{role.mention} added to {member.mention}. Case {case_id}.",
         )
 
     @role.command(
@@ -948,66 +645,37 @@ class ModCog(
         reason: str = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
-
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
 
         if role.is_default():
-            await interaction.followup.send(
-                view=ErrorUI("**You cannot modify the @everyone role.**"),
-            )
-            return
-        if member.bot:
-            await interaction.followup.send(
-                view=ErrorUI("**You tried to remove a role from an app.**"),
-            )
-            return
-        if role not in member.roles:
-            await interaction.followup.send(
-                view=ErrorUI("**That member does not have this role.**"),
-            )
-            return
-        if (
-            role.position >= interaction.user.top_role.position
-            and interaction.user.id != interaction.guild.owner_id
-        ):
-            await interaction.followup.send(
-                view=ErrorUI(
-                    "**You tried to manage a role equal to or above your top role.**",
-                ),
-            )
-            return
-        if role.position >= interaction.guild.me.top_role.position:
-            await interaction.followup.send(
-                view=ErrorUI(
-                    "**I tried to manage a role equal to or above my top role.**",
-                ),
-            )
+            error = "You cannot modify the @everyone role."
+        elif member.bot:
+            error = "You tried to remove a role from an app."
+        elif role not in member.roles:
+            error = "That member does not have this role."
+        else:
+            error = _role_error(interaction, role)
+        if error:
+            await _error(interaction, error)
             return
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            cursor = await conn.execute(
-                """
-                INSERT INTO mod_cases (guild_id, user_id, mod_id, action_type, reason)
-                VALUES (?, ?, ?, 'role_remove', ?)
-                """,
-                (interaction.guild_id, member.id, interaction.user.id, reason),
+        case_id = await self._add_case(interaction, member.id, "role_remove", reason)
+        try:
+            await member.remove_roles(
+                role,
+                reason=f"Role removed by Melvin using {interaction.user.name} with the reason: {reason}",
             )
-            case_id = cursor.lastrowid
-            await conn.commit()
+        except discord.HTTPException:
+            log.exception("Moderation action failed")
+            await self._delete_case(case_id)
+            await _error(interaction, "Failed to remove that role.")
+            return
 
-        await member.remove_roles(
-            role,
-            reason=f"Role removed by Melvin using {interaction.user.name} with the reason: {reason}",
-        )
-
-        view = PositiveUI(
-            title="Role Removed",
-            subtitle=f"**{role.mention} removed from {member.mention}. Case {case_id}.**",
-        )
-        await interaction.followup.send(
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=False, roles=False),
+        await _success(
+            interaction,
+            "Role Removed",
+            f"{role.mention} removed from {member.mention}. Case {case_id}.",
         )
 
     @app_commands.command(

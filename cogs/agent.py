@@ -26,10 +26,19 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 log = logging.getLogger(__name__)
 
+DB_PATH = DATA_DIR / "ai_usage.db"
 RATE_LIMIT = 10
 RATE_PERIOD = 60 * 60
 GROQ_MODEL = "openai/gpt-oss-20b"
 PAGE_SIZE = 2000
+
+SYSTEM_PROMPT = (
+    "Today's date is {date}. "
+    "Try to keep responses tidy and brief, unless otherwise requested by the user. "
+    "Contain responses in short, yet informative paragraphs, rather than graphs or tables or bulletpoints. "
+    "Refrain from using emojis unless told to. "
+)
+SEARCH_PROMPT = "Use the provided search context to ground your answer relative to today's date. "
 
 
 def paginate(text: str, size: int = PAGE_SIZE) -> list[str]:
@@ -48,6 +57,19 @@ def paginate(text: str, size: int = PAGE_SIZE) -> list[str]:
     return pages or [""]
 
 
+def _web_context(query: str, max_results: int = 5) -> str:
+    try:
+        results = list(DDGS().text(query, max_results=max_results))
+    except Exception:
+        return "Could not fetch search context."
+    if not results:
+        return "No search context available."
+    return "\n---\n".join(
+        f"Source {i}:\nTitle: {r.get('title')}\nURL: {r.get('href')}\nSnippet: {r.get('body')}\n"
+        for i, r in enumerate(results, 1)
+    )
+
+
 class AgentCog(
     commands.GroupCog,
     name="ai",
@@ -56,12 +78,10 @@ class AgentCog(
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__()
         self.bot = bot
-        self.api_key = os.getenv("GROQ")
-        self.client = AsyncGroq(api_key=self.api_key)
-        self.db_path = DATA_DIR / "ai_usage.db"
+        self.client = AsyncGroq(api_key=os.getenv("GROQ"))
 
     async def cog_load(self) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ai_requests (
@@ -76,48 +96,25 @@ class AgentCog(
             )
             await db.commit()
 
-    def _get_web_context(self, query: str, max_results: int = 5) -> str:
-        try:
-            ddgs = DDGS()
-            results = list(ddgs.text(query, max_results=max_results))
-            if not results:
-                return "No search context available."
-
-            formatted_results = []
-            for i, r in enumerate(results, 1):
-                formatted_results.append(
-                    f"Source {i}:\nTitle: {r.get('title')}\nURL: {r.get('href')}\nSnippet: {r.get('body')}\n",
-                )
-            return "\n---\n".join(formatted_results)
-        except Exception:
-            return "Could not fetch search context."
-
     async def _check_rate_limit(self, user_id: int) -> tuple[bool, int, int]:
         now = int(time.time())
-        window_start = now - RATE_PERIOD
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT COUNT(*) FROM ai_requests WHERE user_id = ? AND timestamp > ?",
-                (user_id, window_start),
-            ) as cursor:
-                row = await cursor.fetchone()
-                count = row[0] if row else 0
+        async with (
+            aiosqlite.connect(DB_PATH) as db,
+            db.execute(
+                "SELECT COUNT(*), MIN(timestamp) FROM ai_requests "
+                "WHERE user_id = ? AND timestamp > ?",
+                (user_id, now - RATE_PERIOD),
+            ) as cursor,
+        ):
+            count, oldest = await cursor.fetchone()
 
-            if count < RATE_LIMIT:
-                return True, count, 0
-            async with db.execute(
-                "SELECT MIN(timestamp) FROM ai_requests WHERE user_id = ? AND timestamp > ?",
-                (user_id, window_start),
-            ) as cursor:
-                row = await cursor.fetchone()
-                oldest = row[0] if row and row[0] is not None else now
-
-        retry_after = max(0, (oldest + RATE_PERIOD) - now)
-        return False, count, retry_after
+        if count < RATE_LIMIT:
+            return True, count, 0
+        return False, count, max(0, oldest + RATE_PERIOD - now)
 
     async def _record_request(self, user_id: int) -> None:
         now = int(time.time())
-        async with aiosqlite.connect(self.db_path) as db:
+        async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
                 "INSERT INTO ai_requests (user_id, timestamp) VALUES (?, ?)",
                 (user_id, now),
@@ -133,47 +130,34 @@ class AgentCog(
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
-        if isinstance(error, app_commands.CommandOnCooldown):
-            msg = "**You are being rate limited.**"
-        else:
-            msg = "**Something went wrong.**"
-        error_ui = ErrorUI(msg)
+        view = ErrorUI(
+            "**You are being rate limited.**"
+            if isinstance(error, app_commands.CommandOnCooldown)
+            else "**Something went wrong.**",
+        )
         if interaction.response.is_done():
-            await interaction.followup.send(view=error_ui, ephemeral=True)
+            await interaction.followup.send(view=view, ephemeral=True)
         else:
-            await interaction.response.send_message(view=error_ui, ephemeral=True)
+            await interaction.response.send_message(view=view, ephemeral=True)
 
     async def query_groq(self, prompt: str, *, use_search: bool = False) -> str:
-        current_date_str = datetime.now(UTC).strftime("%B %d, %Y")
-
-        system_instruction = (
-            f"Today's date is {current_date_str}. "
-            "Try to keep responses tidy and brief, unless otherwise requested by the user. "
-            "Contain responses in short, yet informative paragraphs, rather than graphs or tables or bulletpoints. "
-            "Refrain from using emojis unless told to. "
-        )
-
+        date = datetime.now(UTC).strftime("%B %d, %Y")
+        system = SYSTEM_PROMPT.format(date=date)
+        context = ""
         if use_search:
-            search_context = await asyncio.to_thread(self._get_web_context, prompt)
-            system_instruction += "Use the provided search context to ground your answer relative to today's date. "
-            full_prompt = (
-                f"--- CURRENT DATE: {current_date_str} ---\n"
-                f"--- SEARCH CONTEXT ---\n"
-                f"{search_context}\n"
-                f"--- END CONTEXT ---\n\n"
-                f"User Question: {prompt}"
-            )
-        else:
-            full_prompt = (
-                f"--- CURRENT DATE: {current_date_str} ---\n\nUser Question: {prompt}"
-            )
+            system += SEARCH_PROMPT
+            search = await asyncio.to_thread(_web_context, prompt)
+            context = f"--- SEARCH CONTEXT ---\n{search}\n--- END CONTEXT ---\n"
 
         try:
             response = await self.client.chat.completions.create(
                 model=GROQ_MODEL,
                 messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": full_prompt},
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": f"--- CURRENT DATE: {date} ---\n{context}\nUser Question: {prompt}",
+                    },
                 ],
                 temperature=0.7,
             )
@@ -182,9 +166,9 @@ class AgentCog(
             error = f"**Groq API Error: {e!s}.**"
             raise RuntimeError(error) from e
 
-        if text:
-            return text
-        raise RuntimeError("**Groq returned an empty response.**")
+        if not text:
+            raise RuntimeError("**Groq returned an empty response.**")
+        return text
 
     @app_commands.command(
         name="ask",
@@ -215,46 +199,39 @@ class AgentCog(
             return
 
         try:
-            start = time.time()
+            start = time.perf_counter()
             ai_response = await self.query_groq(prompt, use_search=search)
-            elapsed = time.time() - start
-
+            elapsed = time.perf_counter() - start
             await self._record_request(interaction.user.id)
-            remaining = max(0, RATE_LIMIT - (used + 1))
-
-            pages = paginate(ai_response)
-
-            grounding_text = (
-                "Grounded using DDGS web search context"
-                if search
-                else "Generated without web search"
-            )
 
             view = Paginator(
                 f"# Prompt: `{prompt.replace('`', '')}`",
-                pages,
+                paginate(ai_response),
                 data_name="Pages",
                 per_page=1,
                 container=True,
                 timeout=300,
             )
-
             view.set_title_button(
                 discord.ui.Button(
                     label="Model",
                     style=discord.ButtonStyle.link,
-                    url="https://huggingface.co/openai/gpt-oss-20b",
+                    url=f"https://huggingface.co/{GROQ_MODEL}",
                 ),
             )
+            grounding = (
+                "Grounded using DDGS web search context"
+                if search
+                else "Generated without web search"
+            )
+            remaining = max(0, RATE_LIMIT - used - 1)
             view.add_under(
                 discord.ui.TextDisplay(
                     f"-# {MELVIN_EMOJI} **Took {elapsed:.1f}s. {remaining}/{RATE_LIMIT} requests left this hour.**\n"
-                    f"-# **{grounding_text} using {GROQ_MODEL}.**",
+                    f"-# **{grounding} using {GROQ_MODEL}.**",
                 ),
             )
-
             view.message = await interaction.edit_original_response(view=view)
-
         except Exception:
             log.exception("Failure in agent command")
             await interaction.edit_original_response(

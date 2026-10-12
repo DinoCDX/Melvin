@@ -2,31 +2,23 @@ import time
 
 import aiosqlite
 
-# module key -> (label, description), from each cog's MODULE
 from globals import DATA_DIR
 from module_registry import MODULES
 
 DB_PATH = DATA_DIR / "modules.db"
-
-# how long the bot trusts its cached settings before re-reading them, so changes
-# made outside the bot (like the dashboard) still apply within a few seconds
 CACHE_SECONDS = 10
 
-# guild id -> (when it was loaded, the modules it has turned off)
 _cache: dict[int, tuple[float, set[str]]] = {}
-
-
-_state = {"db_ready": False}
+_db_ready = False
 
 
 async def init_db() -> None:
-    # the tables only need setting up once per process
-    if _state["db_ready"]:
+    global _db_ready
+    if _db_ready:
         return
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
-        # the bot and the website both read and write here, WAL stops them locking each other out
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(
             """
@@ -39,12 +31,13 @@ async def init_db() -> None:
             """,
         )
         await db.commit()
-    _state["db_ready"] = True
+    _db_ready = True
 
 
 async def disabled_modules(guild_id: int) -> set[str]:
+    now = time.monotonic()
     cached = _cache.get(guild_id)
-    if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
+    if cached and now - cached[0] < CACHE_SECONDS:
         return cached[1]
 
     async with (
@@ -56,12 +49,22 @@ async def disabled_modules(guild_id: int) -> set[str]:
     ):
         disabled = {row[0] async for row in cursor}
 
-    _cache[guild_id] = (time.monotonic(), disabled)
+    _cache[guild_id] = (now, disabled)
     return disabled
 
 
+async def guilds_disabling(module: str) -> set[int]:
+    async with (
+        aiosqlite.connect(DB_PATH) as db,
+        db.execute(
+            "SELECT guild_id FROM guild_modules WHERE module = ? AND enabled = 0",
+            (module,),
+        ) as cursor,
+    ):
+        return {row[0] async for row in cursor}
+
+
 async def is_enabled(guild_id: int | None, module: str) -> bool:
-    # modules only apply to guilds, and are on unless a guild turns them off
     if guild_id is None or module not in MODULES:
         return True
     return module not in await disabled_modules(guild_id)

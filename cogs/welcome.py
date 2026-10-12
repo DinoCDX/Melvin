@@ -73,31 +73,52 @@ async def safe_finish(
     file: discord.File | None = None,
 ) -> None:
     try:
-        if file is not None:
-            await interaction.edit_original_response(view=view, attachments=[file])
-        else:
-            await interaction.edit_original_response(view=view)
-    except discord.NotFound:
-        log.warning(
-            "Original interaction response missing; falling back to followup.send",
+        await interaction.edit_original_response(
+            view=view,
+            **({"attachments": [file]} if file is not None else {}),
         )
+    except discord.NotFound:
+        log.warning("Original interaction response missing; falling back to followup.send")
         try:
-            if file is not None:
-                await interaction.followup.send(view=view, file=file)
-            else:
-                await interaction.followup.send(view=view)
-        except discord.NotFound, discord.HTTPException:
+            await interaction.followup.send(view=view, **({"file": file} if file is not None else {}))
+        except discord.HTTPException:
             log.exception("Followup send also failed")
 
 
 def _load_image_file(path: str | None) -> discord.File | None:
     file = module_config.image_file(path)
-    if file is None:
-        return None
-    return discord.File(file, filename=file.name)
+    return discord.File(file, filename=file.name) if file is not None else None
 
 
-# server only, installed to a server and used in it, never in dms or as a user app
+def _build_welcome_ui(
+    values: dict[str, str | None],
+    target_member: discord.Member | discord.User,
+) -> tuple[ResponseUI, discord.File | None]:
+    text = (values["message"] or "").replace("{member}", target_member.mention)
+    guild = getattr(target_member, "guild", None)
+    if guild is not None:
+        text = text.replace("{member_count}", str(guild.member_count))
+
+    view = ResponseUI(text)
+    file = _load_image_file(values["image"])
+    if file is not None:
+        view.container.add_item(GalleryWithItem(f"attachment://{file.filename}"))
+
+    buttons = [
+        discord.ui.Button(
+            label=values[f"button{number}_label"],
+            style=discord.ButtonStyle.link,
+            url=values[f"button{number}_url"],
+        )
+        for number in (1, 2)
+        if values[f"button{number}_url"]
+    ]
+    if buttons:
+        view.container.add_item(discord.ui.ActionRow(*buttons))
+
+    return view, file
+
+
 @app_commands.allowed_installs(guilds=True, users=False)
 @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 class WelcomeCog(
@@ -148,36 +169,6 @@ class WelcomeCog(
         else:
             await interaction.response.send_message(view=view, ephemeral=True)
 
-    def _build_welcome_ui(
-        self,
-        values: dict[str, str | None],
-        target_member: discord.Member | discord.User,
-    ) -> tuple[ResponseUI, discord.File | None]:
-        text = (values["message"] or "").replace("{member}", target_member.mention)
-        guild = getattr(target_member, "guild", None)
-        if guild is not None:
-            text = text.replace("{member_count}", str(guild.member_count))
-
-        view = ResponseUI(text)
-
-        file = _load_image_file(values["image"])
-        if file is not None:
-            view.container.add_item(GalleryWithItem(f"attachment://{file.filename}"))
-
-        buttons = [
-            discord.ui.Button(
-                label=values[f"button{number}_label"],
-                style=discord.ButtonStyle.link,
-                url=values[f"button{number}_url"],
-            )
-            for number in (1, 2)
-            if values[f"button{number}_url"]
-        ]
-        if buttons:
-            view.container.add_item(discord.ui.ActionRow(*buttons))
-
-        return view, file
-
     @app_commands.command(
         name="config",
         description="Change welcome message settings for this server.",
@@ -196,7 +187,6 @@ class WelcomeCog(
             return
 
         await interaction.response.defer()
-
         values = await module_config.get_all(interaction.guild.id, "welcome")
         if not values["channel"]:
             await safe_finish(
@@ -205,7 +195,7 @@ class WelcomeCog(
             )
             return
 
-        view, file = self._build_welcome_ui(values, interaction.user)
+        view, file = _build_welcome_ui(values, interaction.user)
         await safe_finish(interaction, view, file=file)
 
     @commands.Cog.listener()
@@ -219,14 +209,10 @@ class WelcomeCog(
         if not isinstance(channel, discord.TextChannel):
             return
 
-        view, file = self._build_welcome_ui(values, member)
-
+        view, file = _build_welcome_ui(values, member)
         try:
-            if file is not None:
-                await channel.send(view=view, file=file)
-            else:
-                await channel.send(view=view)
-        except discord.Forbidden, discord.HTTPException:
+            await channel.send(view=view, **({"file": file} if file is not None else {}))
+        except discord.HTTPException:
             pass
 
     @commands.Cog.listener()

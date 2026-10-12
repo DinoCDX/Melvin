@@ -1,5 +1,4 @@
 import logging
-from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
@@ -9,22 +8,57 @@ import module_settings
 from globals import ERROR_MESSAGE, MELVIN_CHECK_EMOJI, MELVIN_CROSS_EMOJI, MELVIN_EMOJI
 from ui import ErrorUI, SmallSeparator
 
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
 log = logging.getLogger(__name__)
 
 
-def _has_manage_guild(interaction: discord.Interaction) -> bool:
-    permissions = getattr(interaction.user, "guild_permissions", None)
-    return bool(permissions and permissions.manage_guild)
+async def _reply_error(interaction: discord.Interaction, message: str) -> None:
+    view = ErrorUI(message)
+    if interaction.response.is_done():
+        await interaction.followup.send(view=view, ephemeral=True)
+    else:
+        await interaction.response.send_message(view=view, ephemeral=True)
+
+
+class ToggleButton(discord.ui.Button["ModulesView"]):
+    def __init__(self, guild_id: int, module: str, *, enabled: bool) -> None:
+        super().__init__(
+            label="On" if enabled else "Off",
+            emoji=MELVIN_CHECK_EMOJI if enabled else MELVIN_CROSS_EMOJI,
+            style=discord.ButtonStyle.secondary,
+        )
+        self.guild_id = guild_id
+        self.module = module
+        self.enabled = enabled
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if not (permissions and permissions.manage_guild):
+            await _reply_error(interaction, "**You do not have permission to do this.**")
+            return
+
+        try:
+            await module_settings.set_enabled(
+                self.guild_id,
+                self.module,
+                enabled=not self.enabled,
+            )
+        except Exception:
+            log.exception(
+                "Failed to toggle module %s in guild %s",
+                self.module,
+                self.guild_id,
+            )
+            await _reply_error(interaction, ERROR_MESSAGE)
+            return
+
+        await interaction.response.edit_message(
+            view=await ModulesView.build(self.guild_id),
+        )
 
 
 class ModulesView(discord.ui.LayoutView):
     def __init__(self, guild_id: int, disabled: set[str]) -> None:
         super().__init__(timeout=300)
-        self.guild_id = guild_id
-
         container = discord.ui.Container(
             discord.ui.TextDisplay(
                 f"# {MELVIN_EMOJI} Modules\n"
@@ -32,59 +66,18 @@ class ModulesView(discord.ui.LayoutView):
             ),
             SmallSeparator(),
         )
-
         for module, (label, description) in module_settings.MODULES.items():
-            enabled = module not in disabled
-            button = discord.ui.Button(
-                label="On" if enabled else "Off",
-                emoji=MELVIN_CHECK_EMOJI if enabled else MELVIN_CROSS_EMOJI,
-                style=discord.ButtonStyle.secondary,
-            )
-            button.callback = self._toggle_callback(module, enabled=enabled)
             container.add_item(
-                discord.ui.Section(f"**{label}**\n-# {description}", accessory=button),
+                discord.ui.Section(
+                    f"**{label}**\n-# {description}",
+                    accessory=ToggleButton(guild_id, module, enabled=module not in disabled),
+                ),
             )
-
         self.add_item(container)
 
-    def _toggle_callback(
-        self,
-        module: str,
-        *,
-        enabled: bool,
-    ) -> Callable[[discord.Interaction], Awaitable[None]]:
-        async def _callback(interaction: discord.Interaction) -> None:
-            if not _has_manage_guild(interaction):
-                await interaction.response.send_message(
-                    view=ErrorUI("**You do not have permission to do this.**"),
-                    ephemeral=True,
-                )
-                return
-
-            try:
-                await module_settings.set_enabled(
-                    self.guild_id,
-                    module,
-                    enabled=not enabled,
-                )
-            except Exception:
-                log.exception(
-                    "Failed to toggle module %s in guild %s",
-                    module,
-                    self.guild_id,
-                )
-                await interaction.response.send_message(
-                    view=ErrorUI(ERROR_MESSAGE),
-                    ephemeral=True,
-                )
-                return
-
-            disabled = await module_settings.disabled_modules(self.guild_id)
-            await interaction.response.edit_message(
-                view=ModulesView(self.guild_id, disabled),
-            )
-
-        return _callback
+    @classmethod
+    async def build(cls, guild_id: int) -> ModulesView:
+        return cls(guild_id, await module_settings.disabled_modules(guild_id))
 
 
 class ModulesCog(
@@ -107,28 +100,20 @@ class ModulesCog(
             msg = "**This command can only be used in a server.**"
         else:
             msg = ERROR_MESSAGE
-
-        view = ErrorUI(msg)
-        if interaction.response.is_done():
-            await interaction.followup.send(view=view, ephemeral=True)
-        else:
-            await interaction.response.send_message(view=view, ephemeral=True)
+        await _reply_error(interaction, msg)
 
     @app_commands.command(
         name="modules",
         description="Turn Melvin's features on or off for this server.",
     )
-    # server only, installed to a server and used in it, never in dms or as a user app
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def modules(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             return
-
-        disabled = await module_settings.disabled_modules(interaction.guild.id)
         await interaction.response.send_message(
-            view=ModulesView(interaction.guild.id, disabled),
+            view=await ModulesView.build(interaction.guild.id),
         )
 
 

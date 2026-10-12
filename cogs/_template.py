@@ -1,5 +1,4 @@
-# a blank module to copy when making a new one. files starting with an underscore
-# aren't loaded. to use it:
+# a blank module to copy. files starting with an underscore aren't loaded.
 #   1. copy it to cogs/<key>.py and replace "template" with the key
 #   2. fill in MODULE
 #   3. restart the bot
@@ -21,12 +20,12 @@ log = logging.getLogger(__name__)
 
 KEY = "template"
 
-# the label and description are shown on /modules and the dashboard. settings are
-# optional, without them remove the config command
+# label and description show on /modules and the dashboard. settings are optional,
+# without them remove the config command
 MODULE = Module(
-    KEY,  # key
-    "Template",  # label
-    "One short line about what it does.",  # description
+    KEY,
+    "Template",
+    "One short line about what it does.",
     settings=(
         Setting(
             "channel",
@@ -38,7 +37,8 @@ MODULE = Module(
 )
 
 
-# server only. remove both decorators to allow dms and user installs
+# server only, remove both to allow dms and user installs. these only work on a
+# GroupCog, a cog with no commands should be a plain commands.Cog instead
 @app_commands.allowed_installs(guilds=True, users=False)
 @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 class TemplateCog(
@@ -69,7 +69,7 @@ class TemplateCog(
         else:
             await interaction.response.send_message(view=view, ephemeral=True)
 
-    # commands are blocked automatically when the module is off
+    # blocked automatically when the module is off
     @app_commands.command(name="hello", description="Say hello.")
     async def hello(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(
@@ -77,7 +77,6 @@ class TemplateCog(
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
-    # uses the settings in MODULE, like the dashboard's Config button
     @app_commands.command(
         name="config",
         description="Change this module's settings for this server.",
@@ -91,8 +90,18 @@ class TemplateCog(
     async def on_member_join(self, member: discord.Member) -> None:
         if member.bot or not await module_settings.is_enabled(member.guild.id, KEY):
             return
+        channel_id = await module_config.get(member.guild.id, KEY, "channel")
+        channel = self.bot.get_channel(int(channel_id)) if channel_id else None
+        if isinstance(channel, discord.TextChannel):
+            try:
+                await channel.send(
+                    view=ResponseUI(f"**{member.mention} joined.**"),
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                pass
 
-    # runs even when the module is off
+    # runs even when the module is off, so a removed server's settings are cleared
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         if not module_config.is_configurable(KEY):

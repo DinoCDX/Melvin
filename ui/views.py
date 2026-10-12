@@ -51,11 +51,6 @@ class LargeSeparator(discord.ui.Separator):
         super().__init__(spacing=discord.SeparatorSpacing.large)
 
 
-class ThinkingText(discord.ui.TextDisplay):
-    def __init__(self) -> None:
-        super().__init__(f"{MELVIN_EMOJI} **Thinking...**")
-
-
 class GalleryWithItem(discord.ui.MediaGallery):
     def __init__(
         self,
@@ -353,13 +348,11 @@ class CasesView(discord.ui.LayoutView):
 class _Card(discord.ui.LayoutView):
     def __init__(
         self,
-        text: str | discord.ui.TextDisplay,
+        text: str,
         color: discord.Color | None = None,
     ) -> None:
         super().__init__()
-        self.text_display = (
-            discord.ui.TextDisplay(text) if isinstance(text, str) else text
-        )
+        self.text_display = discord.ui.TextDisplay(text)
         self.container = discord.ui.Container(
             self.text_display,
             SmallSeparator(),
@@ -406,25 +399,3 @@ class ExceptionUI(ErrorUI):
     def __init__(self) -> None:
         super().__init__(ERROR_MESSAGE)
 
-
-class ActionUI(_Card):
-    def __init__(self) -> None:
-        super().__init__(ThinkingText(), PRIMARY_COLOR)
-
-    def update_text(self, new_content: str) -> None:
-        self.text_display.content = new_content
-
-
-class MiscLoggingClass(_Card):
-    def __init__(self) -> None:
-        super().__init__(ThinkingText(), PRIMARY_COLOR)
-
-
-class NegativeLoggingClass(_Card):
-    def __init__(self) -> None:
-        super().__init__(ThinkingText(), TERTIARY_COLOR)
-
-
-class PositiveLoggingClass(_Card):
-    def __init__(self) -> None:
-        super().__init__(ThinkingText(), SECONDARY_COLOR)

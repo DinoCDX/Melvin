@@ -1,4 +1,6 @@
 import logging
+from collections.abc import Sequence
+from datetime import datetime
 
 import discord
 from discord import app_commands
@@ -8,11 +10,7 @@ import module_config
 import module_settings
 from globals import DATA_DIR, ERROR_MESSAGE, PRIMARY, SECONDARY, TERTIARY
 from module_registry import Module, Setting
-from ui import (
-    ErrorUI,
-    LargeSeparator,
-    open_config,
-)
+from ui import ErrorUI, LargeSeparator, open_config
 
 MODULE = Module(
     "audit",
@@ -29,10 +27,15 @@ MODULE = Module(
 )
 
 log = logging.getLogger(__name__)
+
 HOLOGRAPHIC_VALUES = (11127295, 16759788, 16761760)
+NO_CONTENT = "[No content, likely an embed or attachment.]"
+
+UPDATED = discord.Color.from_str(PRIMARY)
+ADDED = discord.Color.from_str(SECONDARY)
+REMOVED = discord.Color.from_str(TERTIARY)
 
 
-# discord only has one holographic style, and it's a fixed set of three colors
 def _describe_style(role: discord.Role) -> str:
     if (
         role.colour.value,
@@ -45,7 +48,43 @@ def _describe_style(role: discord.Role) -> str:
     return "Solid"
 
 
-# server only, installed to a server and used in it, never in dms or as a user app
+def _role_colours(role: discord.Role) -> str:
+    colours = (role.colour, role.secondary_colour, role.tertiary_colour)
+    return " / ".join(str(colour) for colour in colours if colour)
+
+
+def _clean(text: str, length: int = 500) -> str:
+    return discord.utils.escape_markdown(
+        text[: length - 3] + "..." if len(text) > length else text,
+    )
+
+
+def _attachments(attachments: list[discord.Attachment]) -> str:
+    return "### Attachments\n" + "\n".join(
+        f"- {discord.utils.escape_markdown(f'{attachment.filename} | {attachment.url}')}"
+        for attachment in attachments
+    )
+
+
+def _changes(changes: list[str]) -> list[list[str]]:
+    return [["### Changes\n" + "\n".join(changes)]]
+
+
+def _channel_display(channel: discord.abc.Messageable | discord.abc.GuildChannel) -> str:
+    if isinstance(channel, discord.Thread):
+        parent = channel.parent
+        if parent is None:
+            return channel.mention
+        return f"{parent.mention} -> {channel.mention} | {parent.id} -> {channel.id}"
+    if isinstance(channel, discord.TextChannel):
+        return f"{channel.mention} | {channel.id}"
+    return "Unknown Channel"
+
+
+def _thumbnail(user: discord.abc.User) -> discord.ui.Thumbnail:
+    return discord.ui.Thumbnail(media=user.display_avatar.url)
+
+
 @app_commands.allowed_installs(guilds=True, users=False)
 @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 class AuditCog(
@@ -57,36 +96,6 @@ class AuditCog(
         super().__init__()
         self.bot = bot
         self.db_path = DATA_DIR / "logging.db"
-
-    def clean_and_truncate(self, text: str, length: int = 500) -> str:
-        return discord.utils.escape_markdown(
-            (text)[: length - 3] + "..." if len(text) > length else text,
-        )
-
-    def format_attachments(self, attachments: list[discord.Attachment]) -> str:
-        return "\n".join(
-            f"- {discord.utils.escape_markdown(f'{attachment.filename} | {attachment.url}')}"
-            for attachment in attachments
-        )
-
-    def channel_display(
-        self,
-        channel: discord.abc.Messageable | discord.abc.GuildChannel,
-    ) -> str:
-        if isinstance(channel, discord.Thread):
-            parent = channel.parent
-
-            if isinstance(parent, discord.ForumChannel):
-                return f"{parent.mention} -> {channel.mention} | {parent.id} -> {channel.id}"
-            if parent is not None:
-                return f"{parent.mention} -> {channel.mention} | {parent.id} -> {channel.id}"
-
-            return channel.mention
-
-        if isinstance(channel, discord.TextChannel):
-            return f"{channel.mention} | {channel.id}"
-
-        return "Unknown Channel"
 
     async def cog_load(self) -> None:
         await module_config.migrate_legacy(
@@ -122,303 +131,166 @@ class AuditCog(
     async def config(self, interaction: discord.Interaction) -> None:
         await open_config(interaction, "audit")
 
-    async def get_log_channel(
-        self,
-        guild_id: int,
-    ) -> discord.abc.GuildChannel | discord.Thread | discord.abc.PrivateChannel | None:
-        # every audit listener finds its channel through here, so this gates them all
+    async def get_log_channel(self, guild_id: int) -> discord.TextChannel | None:
         if not await module_settings.is_enabled(guild_id, "audit"):
             return None
-
         channel_id = await module_config.get(guild_id, "audit", "log_channel")
-        return self.bot.get_channel(int(channel_id)) if channel_id else None
+        channel = self.bot.get_channel(int(channel_id)) if channel_id else None
+        return channel if isinstance(channel, discord.TextChannel) else None
+
+    async def _log(
+        self,
+        guild_id: int,
+        color: discord.Color,
+        title: str | None,
+        info: str,
+        *,
+        accessory: discord.ui.Item | None = None,
+        sections: Sequence[Sequence[str]] = (),
+        when: datetime | None = None,
+    ) -> None:
+        channel = await self.get_log_channel(guild_id)
+        if channel is None:
+            return
+
+        items: list[discord.ui.Item] = []
+        if title is not None:
+            stamp = discord.utils.format_dt(when or discord.utils.utcnow(), style="F")
+            items.append(discord.ui.TextDisplay(f"# {title} | {stamp}"))
+        items.append(
+            discord.ui.Section(info, accessory=accessory)
+            if accessory is not None
+            else discord.ui.TextDisplay(info),
+        )
+        for section in sections:
+            items.append(LargeSeparator())
+            items.extend(discord.ui.TextDisplay(text) for text in section)
+
+        view = discord.ui.LayoutView()
+        view.add_item(discord.ui.Container(*items, accent_color=color))
+        try:
+            await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            pass
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        log_channel = await self.get_log_channel(member.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        container = discord.ui.Container(
-            discord.ui.Section(
-                f"**{member} joined.**\n**Member #{member.guild.member_count}.**",
-                accessory=discord.ui.Thumbnail(media=member.display_avatar.url),
-            ),
-            accent_color=discord.Color.from_str(SECONDARY),
+        await self._log(
+            member.guild.id,
+            ADDED,
+            None,
+            f"**{member} joined.**\n**Member #{member.guild.member_count}.**",
+            accessory=_thumbnail(member),
         )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
-        log_channel = await self.get_log_channel(member.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        container = discord.ui.Container(
-            discord.ui.Section(
-                f"**{member} left.**\n**Member #{member.guild.member_count}.**",
-                accessory=discord.ui.Thumbnail(media=member.display_avatar.url),
-            ),
-            accent_color=discord.Color.from_str(TERTIARY),
+        await self._log(
+            member.guild.id,
+            REMOVED,
+            None,
+            f"**{member} left.**\n**Member #{member.guild.member_count}.**",
+            accessory=_thumbnail(member),
         )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
-    async def on_member_update(
-        self,
-        before: discord.Member,
-        after: discord.Member,
-    ) -> None:
-        log_channel = await self.get_log_channel(before.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
         changes = []
-
         if before.nick != after.nick:
-            old_nick = before.nick or before.name
-            new_nick = after.nick or after.name
-            changes.append(f"**Nickname:** {old_nick} | {new_nick}")
+            changes.append(
+                f"**Nickname:** {before.nick or before.name} | {after.nick or after.name}",
+            )
 
         if before.roles != after.roles:
-            before_roles = set(before.roles)
-            after_roles = set(after.roles)
-            added = after_roles - before_roles
-            removed = before_roles - after_roles
-            if added:
-                changes.append(
-                    f"**Roles added:** {', '.join(r.mention for r in added)}",
-                )
-            if removed:
-                changes.append(
-                    f"**Roles removed:** {', '.join(r.mention for r in removed)}",
-                )
+            before_roles, after_roles = set(before.roles), set(after.roles)
+            if added := after_roles - before_roles:
+                changes.append(f"**Roles added:** {', '.join(r.mention for r in added)}")
+            if removed := before_roles - after_roles:
+                changes.append(f"**Roles removed:** {', '.join(r.mention for r in removed)}")
 
         if before.timed_out_until != after.timed_out_until:
-            if after.timed_out_until is not None:
-                changes.append(
-                    f"**Timed out until:** {discord.utils.format_dt(after.timed_out_until, style='f')}",
-                )
-            else:
-                changes.append("**Timeout removed.**")
-
-        if not changes:
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Member Updated | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.Section(
-                f"**Member:** {after.mention} | {after.id}",
-                accessory=discord.ui.Thumbnail(media=after.display_avatar.url),
-            ),
-            accent_color=discord.Color.from_str(PRIMARY),
-        )
-
-        changes_text = "\n".join(changes)
-        container.add_item(LargeSeparator())
-        container.add_item(
-            discord.ui.TextDisplay(
-                f"### Changes\n{changes_text}",
-            ),
-        )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
+            changes.append(
+                f"**Timed out until:** {discord.utils.format_dt(after.timed_out_until, style='f')}"
+                if after.timed_out_until is not None
+                else "**Timeout removed.**",
             )
-        except discord.Forbidden, discord.HTTPException:
-            pass
+
+        if changes:
+            await self._log(
+                after.guild.id,
+                UPDATED,
+                "Member Updated",
+                f"**Member:** {after.mention} | {after.id}",
+                accessory=_thumbnail(after),
+                sections=_changes(changes),
+            )
 
     @commands.Cog.listener()
     async def on_user_update(self, before: discord.User, after: discord.User) -> None:
-        if (
-            before.name == after.name
-            and before.global_name == after.global_name
-            and before.avatar == after.avatar
-        ):
+        changes = []
+        if before.name != after.name:
+            changes.append(f"**Username:** {before.name} | {after.name}")
+        if before.global_name != after.global_name:
+            changes.append(
+                f"**Display name:** {before.global_name or before.name} | {after.global_name or after.name}",
+            )
+        if before.avatar != after.avatar:
+            changes.append("**Avatar changed.**")
+        if not changes:
             return
 
-        for guild in self.bot.guilds:
-            member = guild.get_member(after.id)
-            if member is None:
-                continue
-            log_channel = await self.get_log_channel(guild.id)
-            if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-                continue
-
-            changes = []
-            if before.name != after.name:
-                changes.append(f"**Username:** {before.name} | {after.name}")
-            if before.global_name != after.global_name:
-                changes.append(
-                    f"**Display name:** {before.global_name or before.name} | {after.global_name or after.name}",
-                )
-            if before.avatar != after.avatar:
-                changes.append("**Avatar changed.**")
-
-            if not changes:
-                continue
-
-            container = discord.ui.Container(
-                discord.ui.TextDisplay(
-                    f"# Profile Updated | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-                ),
-                discord.ui.Section(
-                    f"**User:** {after.mention} | {after.id}",
-                    accessory=discord.ui.Thumbnail(media=after.display_avatar.url),
-                ),
-                accent_color=discord.Color.from_str(PRIMARY),
+        for guild in after.mutual_guilds:
+            await self._log(
+                guild.id,
+                UPDATED,
+                "Profile Updated",
+                f"**User:** {after.mention} | {after.id}",
+                accessory=_thumbnail(after),
+                sections=_changes(changes),
             )
-
-            changes_text = "\n".join(changes)
-            container.add_item(LargeSeparator())
-            container.add_item(
-                discord.ui.TextDisplay(
-                    f"### Changes\n{changes_text}",
-                ),
-            )
-            view = discord.ui.LayoutView()
-            view.add_item(container)
-
-            try:
-                await log_channel.send(
-                    view=view,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except discord.Forbidden, discord.HTTPException:
-                pass
 
     @commands.Cog.listener()
-    async def on_message_edit(
-        self,
-        before: discord.Message,
-        after: discord.Message,
-    ) -> None:
-        if before.author.bot or before.content == after.content:
+    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        if before.author.bot or not before.guild or before.content == after.content:
             return
 
-        if not before.guild:
-            return
-
-        log_channel = await self.get_log_channel(before.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Message Edited | {discord.utils.format_dt(after.edited_at or discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.Section(
-                f"**Author:** {before.author.mention} | {before.author.id}\n"
-                f"**Channel:** {self.channel_display(after.channel)}",
-                accessory=discord.ui.Button(
-                    label="Jump to Message",
-                    style=discord.ButtonStyle.link,
-                    url=after.jump_url,
-                ),
-            ),
-            accent_color=discord.Color.from_str(PRIMARY),
+        sections = [[_attachments(after.attachments)]] if after.attachments else []
+        sections.append(
+            [
+                f"### Before\n{_clean(before.content) or NO_CONTENT}",
+                f"### After\n{_clean(after.content) or NO_CONTENT}",
+            ],
         )
-
-        if after.attachments:
-            container.add_item(LargeSeparator())
-            container.add_item(
-                discord.ui.TextDisplay(
-                    f"### Attachments\n{self.format_attachments(after.attachments)}",
-                ),
-            )
-
-        container.add_item(LargeSeparator())
-        container.add_item(
-            discord.ui.TextDisplay(
-                "### Before\n"
-                f"{self.clean_and_truncate(before.content) or '[No content, likely an embed or attachment.]'}",
+        await self._log(
+            before.guild.id,
+            UPDATED,
+            "Message Edited",
+            f"**Author:** {before.author.mention} | {before.author.id}\n"
+            f"**Channel:** {_channel_display(after.channel)}",
+            accessory=discord.ui.Button(
+                label="Jump to Message",
+                style=discord.ButtonStyle.link,
+                url=after.jump_url,
             ),
+            sections=sections,
+            when=after.edited_at,
         )
-        container.add_item(
-            discord.ui.TextDisplay(
-                "### After\n"
-                f"{self.clean_and_truncate(after.content) or '[No content, likely an embed or attachment.]'}",
-            ),
-        )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
     async def on_message_delete(self, msg: discord.Message) -> None:
         if msg.author.bot or not msg.guild:
             return
-        log_channel = await self.get_log_channel(msg.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
 
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Message Deleted | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.TextDisplay(
-                f"**Author:** {msg.author.mention} | {msg.author.id}\n"
-                f"**Channel:** {self.channel_display(msg.channel)}",
-            ),
-            accent_color=discord.Color.from_str(TERTIARY),
+        sections = [[_attachments(msg.attachments)]] if msg.attachments else []
+        sections.append([f"### Content\n{_clean(msg.content or NO_CONTENT)}"])
+        await self._log(
+            msg.guild.id,
+            REMOVED,
+            "Message Deleted",
+            f"**Author:** {msg.author.mention} | {msg.author.id}\n"
+            f"**Channel:** {_channel_display(msg.channel)}",
+            sections=sections,
         )
-
-        if msg.attachments:
-            container.add_item(LargeSeparator())
-            container.add_item(
-                discord.ui.TextDisplay(
-                    f"### Attachments\n{self.format_attachments(msg.attachments)}",
-                ),
-            )
-
-        container.add_item(LargeSeparator())
-        container.add_item(
-            discord.ui.TextDisplay(
-                "### Content\n"
-                f"{self.clean_and_truncate((msg.content) or '[No content, likely an embed or attachment.]')}",
-            ),
-        )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -427,130 +299,42 @@ class AuditCog(
         before: discord.VoiceState,
         after: discord.VoiceState,
     ) -> None:
-        log_channel = await self.get_log_channel(member.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
+        old, new = before.channel, after.channel
+        if old == new:
             return
 
-        if before.channel is None and after.channel is not None:
-            container = discord.ui.Container(
-                discord.ui.TextDisplay(
-                    f"# Voice Channel Joined | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-                ),
-                discord.ui.Section(
-                    f"**Member:** {member.mention} | {member.id}\n**Channel:** {after.channel.mention}",
-                    accessory=discord.ui.Thumbnail(media=member.display_avatar.url),
-                ),
-                accent_color=discord.Color.from_str(SECONDARY),
-            )
-            view = discord.ui.LayoutView()
-            view.add_item(container)
-            try:
-                await log_channel.send(
-                    view=view,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except discord.Forbidden, discord.HTTPException:
-                pass
-            return
+        if old is None:
+            color, title, line = ADDED, "Voice Channel Joined", f"**Channel:** {new.mention}"
+        elif new is None:
+            color, title, line = REMOVED, "Voice Channel Left", f"**Channel:** {old.mention}"
+        else:
+            color, title, line = UPDATED, "Voice Channel Moved", f"**Moved:** {old.mention} -> {new.mention}"
 
-        if before.channel is not None and after.channel is None:
-            container = discord.ui.Container(
-                discord.ui.TextDisplay(
-                    f"# Voice Channel Left | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-                ),
-                discord.ui.Section(
-                    f"**Member:** {member.mention} | {member.id}\n**Channel:** {before.channel.mention}",
-                    accessory=discord.ui.Thumbnail(media=member.display_avatar.url),
-                ),
-                accent_color=discord.Color.from_str(TERTIARY),
-            )
-            view = discord.ui.LayoutView()
-            view.add_item(container)
-            try:
-                await log_channel.send(
-                    view=view,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except discord.Forbidden, discord.HTTPException:
-                pass
-            return
-
-        if (
-            before.channel is not None
-            and after.channel is not None
-            and before.channel.id != after.channel.id
-        ):
-            container = discord.ui.Container(
-                discord.ui.TextDisplay(
-                    f"# Voice Channel Moved | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-                ),
-                discord.ui.Section(
-                    f"**Member:** {member.mention} | {member.id}\n**Moved:** {before.channel.mention} -> {after.channel.mention}",
-                    accessory=discord.ui.Thumbnail(media=member.display_avatar.url),
-                ),
-                accent_color=discord.Color.from_str(PRIMARY),
-            )
-            view = discord.ui.LayoutView()
-            view.add_item(container)
-            try:
-                await log_channel.send(
-                    view=view,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except discord.Forbidden, discord.HTTPException:
-                pass
+        await self._log(
+            member.guild.id,
+            color,
+            title,
+            f"**Member:** {member.mention} | {member.id}\n{line}",
+            accessory=_thumbnail(member),
+        )
 
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel) -> None:
-        log_channel = await self.get_log_channel(channel.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Channel Created | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.TextDisplay(
-                f"**Channel:** {channel.mention} | {channel.id}\n**Type:** {channel.type}",
-            ),
-            accent_color=discord.Color.from_str(SECONDARY),
+        await self._log(
+            channel.guild.id,
+            ADDED,
+            "Channel Created",
+            f"**Channel:** {channel.mention} | {channel.id}\n**Type:** {channel.type}",
         )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
-        log_channel = await self.get_log_channel(channel.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Channel Deleted | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.TextDisplay(
-                f"**Name:** #{channel.name} | {channel.id}\n**Type:** {channel.type}",
-            ),
-            accent_color=discord.Color.from_str(TERTIARY),
+        await self._log(
+            channel.guild.id,
+            REMOVED,
+            "Channel Deleted",
+            f"**Name:** #{channel.name} | {channel.id}\n**Type:** {channel.type}",
         )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
     async def on_guild_channel_update(
@@ -558,154 +342,64 @@ class AuditCog(
         before: discord.abc.GuildChannel,
         after: discord.abc.GuildChannel,
     ) -> None:
-        log_channel = await self.get_log_channel(before.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
         changes = []
         if before.name != after.name:
             changes.append(f"**Name:** {before.name} | {after.name}")
         if getattr(before, "topic", None) != getattr(after, "topic", None):
             changes.append("**Topic updated.**")
 
-        if not changes:
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Channel Updated | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.TextDisplay(f"**Channel:** {after.mention} | {after.id}"),
-            accent_color=discord.Color.from_str(PRIMARY),
-        )
-
-        changes_text = "\n".join(changes)
-        container.add_item(LargeSeparator())
-        container.add_item(
-            discord.ui.TextDisplay(
-                f"### Changes\n{changes_text}",
-            ),
-        )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
+        if changes:
+            await self._log(
+                after.guild.id,
+                UPDATED,
+                "Channel Updated",
+                f"**Channel:** {after.mention} | {after.id}",
+                sections=_changes(changes),
             )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
     async def on_guild_role_create(self, role: discord.Role) -> None:
-        log_channel = await self.get_log_channel(role.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Role Created | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.TextDisplay(f"**Role:** {role.mention} | {role.id}"),
-            accent_color=discord.Color.from_str(SECONDARY),
+        await self._log(
+            role.guild.id,
+            ADDED,
+            "Role Created",
+            f"**Role:** {role.mention} | {role.id}",
         )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role) -> None:
-        log_channel = await self.get_log_channel(role.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Role Deleted | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.TextDisplay(f"**Name:** {role.name} | {role.id}"),
-            accent_color=discord.Color.from_str(TERTIARY),
+        await self._log(
+            role.guild.id,
+            REMOVED,
+            "Role Deleted",
+            f"**Name:** {role.name} | {role.id}",
         )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
-    async def on_guild_role_update(
-        self,
-        before: discord.Role,
-        after: discord.Role,
-    ) -> None:
-        log_channel = await self.get_log_channel(before.guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role) -> None:
         changes = []
         if before.name != after.name:
             changes.append(f"**Name:** **{before.name}** | **{after.name}**")
-
-        colour_changed = (
+        if (
             before.colour != after.colour
             or before.secondary_colour != after.secondary_colour
             or before.tertiary_colour != after.tertiary_colour
-        )
-        if colour_changed:
-
-            def fmt(role: discord.Role) -> str:
-                parts = [str(role.colour)]
-                if role.secondary_colour:
-                    parts.append(str(role.secondary_colour))
-                if role.tertiary_colour:
-                    parts.append(str(role.tertiary_colour))
-                return " / ".join(parts)
-
-            b_style = _describe_style(before)
-            a_style = _describe_style(after)
+        ):
             changes.append(
-                f"**Colours:** **{fmt(before)}** ({b_style}) | **{fmt(after)}** ({a_style})",
+                f"**Colours:** **{_role_colours(before)}** ({_describe_style(before)}) | "
+                f"**{_role_colours(after)}** ({_describe_style(after)})",
             )
-
         if before.permissions != after.permissions:
             changes.append("**Permissions updated.**")
 
-        if not changes:
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Role Updated | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.TextDisplay(f"**Role:** {after.mention} | {after.id}"),
-            accent_color=discord.Color.from_str(PRIMARY),
-        )
-        changes_text = "\n".join(changes)
-        container.add_item(LargeSeparator())
-        container.add_item(discord.ui.TextDisplay(f"### Changes\n{changes_text}"))
-
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
+        if changes:
+            await self._log(
+                after.guild.id,
+                UPDATED,
+                "Role Updated",
+                f"**Role:** {after.mention} | {after.id}",
+                sections=_changes(changes),
             )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
     async def on_member_ban(
@@ -713,57 +407,23 @@ class AuditCog(
         guild: discord.Guild,
         user: discord.User | discord.Member,
     ) -> None:
-        log_channel = await self.get_log_channel(guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Member Banned | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.Section(
-                f"**User:** {user} | {user.id}",
-                accessory=discord.ui.Thumbnail(media=user.display_avatar.url),
-            ),
-            accent_color=discord.Color.from_str(TERTIARY),
+        await self._log(
+            guild.id,
+            REMOVED,
+            "Member Banned",
+            f"**User:** {user} | {user.id}",
+            accessory=_thumbnail(user),
         )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
     @commands.Cog.listener()
     async def on_member_unban(self, guild: discord.Guild, user: discord.User) -> None:
-        log_channel = await self.get_log_channel(guild.id)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# Member Unbanned | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.Section(
-                f"**User:** {user} | {user.id}",
-                accessory=discord.ui.Thumbnail(media=user.display_avatar.url),
-            ),
-            accent_color=discord.Color.from_str(SECONDARY),
+        await self._log(
+            guild.id,
+            ADDED,
+            "Member Unbanned",
+            f"**User:** {user} | {user.id}",
+            accessory=_thumbnail(user),
         )
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
 
 async def setup(bot: commands.Bot) -> None:

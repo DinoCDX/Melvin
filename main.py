@@ -26,16 +26,33 @@ from globals import (
 from ui import ErrorUI, GalleryWithItem, HelpView, InfoUI, SmallSeparator
 
 logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-log = logging.getLogger(__name__)
+
 STATS_FILE = DATA_DIR / "bot_stats.json"
 GUILDS_FILE = DATA_DIR / "bot_guilds.json"
 
+LINK_BUTTONS = (
+    (
+        "Add Me",
+        "https://discord.com/oauth2/authorize?client_id=1468362201197973756",
+        "<:pluscircleduotone:1548410107484835942>",
+    ),
+    ("Support", "https://discord.gg/PfyKM7dyx4", "<:questionduotone:1548410071195844668>"),
+    ("Website", WEBSITE_URL, "<:browsersduotone:1548410087037477066>"),
+    ("Status", f"{WEBSITE_URL}/status", "<:browsersduotone:1548410087037477066>"),
+    (
+        "Github",
+        "https://github.com/saltgranule/melvin",
+        "<:githublogoduotone:1548410053382643723>",
+    ),
+)
+
 
 class MelvinTree(app_commands.CommandTree):
-    # blocks commands from modules a guild has turned off, before they run
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         command = interaction.command
         if command is None:
@@ -50,7 +67,6 @@ class MelvinTree(app_commands.CommandTree):
         if await module_settings.is_enabled(interaction.guild_id, module):
             return True
 
-        # autocomplete can't be answered with a message, so it just gets nothing
         if interaction.type is discord.InteractionType.application_command:
             label = module_settings.MODULES[module][0]
             await interaction.response.send_message(
@@ -69,8 +85,6 @@ class Melvin(commands.Bot):
             command_prefix="-",
             intents=intents,
             tree_cls=MelvinTree,
-            # every command works as a user app and in dms unless it says otherwise,
-            # server only cogs override this with their own allowed_installs and contexts
             allowed_installs=app_commands.AppInstallationType(guild=True, user=True),
             allowed_contexts=app_commands.AppCommandContext(
                 guild=True,
@@ -87,7 +101,6 @@ class Melvin(commands.Bot):
         effect_id: DisplayNameEffect,
         colors: list[str],
     ) -> None:
-        color_integers = [int(hex_code, 16) for hex_code in colors]
         await self.http.request(
             route=discord.http.Route(
                 "PATCH",
@@ -97,7 +110,7 @@ class Melvin(commands.Bot):
             json={
                 "display_name_font_id": font_id.value,
                 "display_name_effect_id": effect_id.value,
-                "display_name_colors": color_integers,
+                "display_name_colors": [int(hex_code, 16) for hex_code in colors],
             },
         )
 
@@ -110,9 +123,7 @@ class Melvin(commands.Bot):
                 user_id=self.user.id,
             ),
         )
-
         styles = response["display_name_styles"]
-
         return {
             "font_id": DisplayNameFont(styles["font_id"]),
             "effect_id": DisplayNameEffect(styles["effect_id"]),
@@ -128,8 +139,6 @@ class Melvin(commands.Bot):
         )
 
     async def setup_hook(self) -> None:
-        loop = asyncio.get_running_loop()
-        loop.set_debug(True)
         try:
             resolver = aiodns.DNSResolver(nameservers=["1.1.1.1", "8.8.8.8"])
             self.http._HTTPClient__session._connector._resolver._resolver = resolver  # ruff: ignore[private-member-access]  # pyright: ignore[ reportAttributeAccessIssue]
@@ -139,7 +148,6 @@ class Melvin(commands.Bot):
         status.set_start_time()
         log.info("Logging started.")
 
-    # the dashboard reads this to know which servers melvin is in
     def write_guild_ids(self) -> None:
         temp = GUILDS_FILE.with_suffix(".tmp")
         temp.write_text(json.dumps([str(guild.id) for guild in self.guilds]))
@@ -157,25 +165,26 @@ class Melvin(commands.Bot):
         await self.tree.sync()
 
         try:
-            await update_stats()
-            await update_shard_latency()
+            await asyncio.gather(update_stats(), update_shard_latency())
         except Exception:
             log.exception("Failed to record initial startup metrics")
 
-        if not update_stats.is_running():
-            update_stats.start()
-        if not update_shard_latency.is_running():
-            update_shard_latency.start()
+        for loop in (update_stats, update_shard_latency):
+            if not loop.is_running():
+                loop.start()
 
 
 bot = Melvin()
+
+
+def _latencies() -> list[tuple[int, float]]:
+    return getattr(bot, "latencies", None) or [(0, bot.latency)]
 
 
 @tasks.loop(minutes=30)
 async def update_stats() -> None:
     guild_count = len(bot.guilds)
     member_count = sum(guild.member_count or 0 for guild in bot.guilds)
-    STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATS_FILE.write_text(
         json.dumps({"guild_count": guild_count, "member_count": member_count}),
     )
@@ -193,42 +202,35 @@ async def _measure_api_latency() -> float | None:
 
 
 def _format_ms(value: float) -> str:
-    # bot.latency is nan/inf when the gateway isn't connected yet
-    if not math.isfinite(value):
-        return "N/A"
-    return f"{round(value)}ms"
+    return f"{round(value)}ms" if math.isfinite(value) else "N/A"
 
 
 @tasks.loop(minutes=1)
 async def update_shard_latency() -> None:
     api_latency_ms = await _measure_api_latency() or 0.0
-    latencies = getattr(bot, "latencies", None) or [(0, bot.latency)]
-    for shard_id, latency in latencies:
-        # handle disconnects
-        if not math.isfinite(latency):
-            continue
-        await status.record_latency(shard_id, latency * 1000, api_latency_ms)
+    for shard_id, latency in _latencies():
+        if math.isfinite(latency):
+            await status.record_latency(shard_id, latency * 1000, api_latency_ms)
 
 
 @bot.tree.command(name="latency", description="View the bot's latency.")
 async def latency_command(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
 
-    latencies = getattr(bot, "latencies", None) or [(0, bot.latency)]
-    shard_lines = [
+    lines = [
         f"**{SHARD_ICON} Shard {shard_id}, {_format_ms(latency * 1000)}**"
-        for shard_id, latency in latencies
+        for shard_id, latency in _latencies()
     ]
-
     api_latency = await _measure_api_latency()
-    api_line = (
+    lines.append(
         f"**{API_ICON} API, {_format_ms(api_latency)}**"
         if api_latency is not None
-        else "**API, unavailable**"
+        else "**API, unavailable**",
     )
 
-    view = InfoUI(title="Latency", subtitle="\n".join([*shard_lines, api_line]))
-    await interaction.followup.send(view=view)
+    await interaction.followup.send(
+        view=InfoUI(title="Latency", subtitle="\n".join(lines)),
+    )
 
 
 @bot.tree.command(name="help", description="Take a peek at Melvin's commands.")
@@ -239,52 +241,24 @@ async def help_command(interaction: discord.Interaction) -> None:
         if interaction.guild_id is not None
         else set()
     )
-    view = HelpView(bot, hidden)
-    await interaction.followup.send(view=view)
+    await interaction.followup.send(view=HelpView(bot, hidden))
 
 
 @bot.tree.command(name="melvin", description="Here's Melvin.")
 async def melvin_command(interaction: discord.Interaction) -> None:
     await interaction.response.defer()
 
-    row = discord.ui.ActionRow()
-    invite = discord.ui.Button(
-        label="Add Me",
-        style=discord.ButtonStyle.link,
-        url="https://discord.com/oauth2/authorize?client_id=1468362201197973756",
-        emoji="<:pluscircleduotone:1548410107484835942>",
+    row = discord.ui.ActionRow(
+        *(
+            discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.link,
+                url=url,
+                emoji=emoji,
+            )
+            for label, url, emoji in LINK_BUTTONS
+        ),
     )
-    support = discord.ui.Button(
-        label="Support",
-        style=discord.ButtonStyle.link,
-        url="https://discord.gg/PfyKM7dyx4",
-        emoji="<:questionduotone:1548410071195844668>",
-    )
-    web = discord.ui.Button(
-        label="Website",
-        style=discord.ButtonStyle.link,
-        url=WEBSITE_URL,
-        emoji="<:browsersduotone:1548410087037477066>",
-    )
-    status_btn = discord.ui.Button(
-        label="Status",
-        style=discord.ButtonStyle.link,
-        url=f"{WEBSITE_URL}/status",
-        emoji="<:browsersduotone:1548410087037477066>",
-    )
-    github = discord.ui.Button(
-        label="Github",
-        style=discord.ButtonStyle.link,
-        url="https://github.com/saltgranule/melvin",
-        emoji="<:githublogoduotone:1548410053382643723>",
-    )
-
-    row.add_item(invite)
-    row.add_item(support)
-    row.add_item(web)
-    row.add_item(status_btn)
-    row.add_item(github)
-
     view = discord.ui.LayoutView()
     view.add_item(
         discord.ui.Container(
@@ -296,7 +270,6 @@ async def melvin_command(interaction: discord.Interaction) -> None:
             row,
         ),
     )
-
     await interaction.followup.send(view=view)
 
 
@@ -305,11 +278,9 @@ async def main() -> None:
     token = os.getenv("TOKEN")
     if not token:
         raise RuntimeError("Token is not set.")
-    STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     await module_settings.init_db()
     async with bot:
-        # loads every file in cogs/ except those starting with an underscore. files without
-        # a setup function are skipped
         for name in module_registry.cog_names():
             try:
                 await bot.load_extension(name)

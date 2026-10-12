@@ -4,7 +4,7 @@ import logging
 import random
 import re
 import urllib.parse
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 import aiohttp
 import discord
@@ -28,25 +28,24 @@ MODULE = Module(
     "Encoding, decoding, speak, 8ball, Urban Dictionary, and Wikipedia.",
 )
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
 log = logging.getLogger(__name__)
+
+NO_MENTIONS = discord.AllowedMentions.none()
 
 URBAN_API = "https://api.urbandictionary.com/v0/define"
 URBAN_DEFINE = "https://www.urbandictionary.com/define.php?term="
-# raw text is cut before links are added, so each page stays under discord's limit
 URBAN_DEFINITION_LIMIT = 1200
 URBAN_EXAMPLE_LIMIT = 600
+URBAN_LINK = re.compile(r"\[([^\]]+)\]")
 
 WIKI_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 WIKI_RANDOM = "https://en.wikipedia.org/api/rest_v1/page/random/summary"
 WIKI_SEARCH = "https://en.wikipedia.org/w/rest.php/v1/search/title"
-# metadata so we dont get throttled
 WIKI_HEADERS = {"User-Agent": f"Melvin ({WEBSITE_URL})"}
 WIKI_EXTRACT_LIMIT = 1500
+WIKI_UNREACHABLE = "**Melvin couldn't reach Wikipedia, try again later.**"
 
-EIGHTBALL = [
+EIGHTBALL = (
     "It is certain.",
     "Yes.",
     "Without a doubt.",
@@ -56,9 +55,8 @@ EIGHTBALL = [
     "My reply is no.",
     "Very doubtful.",
     "No.",
-]
+)
 
-# leaves room for the rest of the reply inside discord's 4000 character limit
 MAX_RESULT_LENGTH = 3900
 
 MORSE = {
@@ -78,32 +76,26 @@ MORSE_REVERSE = {code: char for char, code in MORSE.items()}
 
 
 class CodecError(ValueError):
-    """An encode failure whose message is a full sentence that's safe to show users."""
+    pass
 
 
 def _binary_decode(text: str) -> bytes:
     chunks = text.split()
-    if not all(set(chunk) <= {"0", "1"} and len(chunk) == 8 for chunk in chunks):
+    if not all(len(chunk) == 8 and set(chunk) <= {"0", "1"} for chunk in chunks):
         raise ValueError
     return bytes(int(chunk, 2) for chunk in chunks)
 
 
 def _base32_decode(text: str) -> bytes:
     cleaned = "".join(text.split()).upper()
-    # padding is often left off when base32 is copied around
-    cleaned += "=" * (-len(cleaned) % 8)
-    return base64.b32decode(cleaned)
+    return base64.b32decode(cleaned + "=" * (-len(cleaned) % 8))
 
 
 def _morse_encode(text: str) -> str:
     upper = text.upper()
-    unknown = sorted(
-        {char for char in upper if char not in MORSE and not char.isspace()},
-    )
+    unknown = sorted({char for char in upper if char not in MORSE and not char.isspace()})
     if unknown:
-        listed = unknown[0]
-        if len(unknown) > 1:
-            listed = ", ".join(unknown[:-1]) + " and " + unknown[-1]
+        listed = unknown[0] if len(unknown) == 1 else ", ".join(unknown[:-1]) + " and " + unknown[-1]
         msg = f"{listed} can't be written in Morse."
         raise CodecError(msg)
     return " / ".join(" ".join(MORSE[char] for char in word) for word in upper.split())
@@ -111,14 +103,10 @@ def _morse_encode(text: str) -> str:
 
 def _morse_decode(text: str) -> str:
     words = [word.split() for word in text.split("/")]
-    unknown = sorted(
-        {code for word in words for code in word if code not in MORSE_REVERSE},
-    )
-    if unknown:
-        raise ValueError
-    return " ".join(
-        "".join(MORSE_REVERSE[code] for code in word) for word in words if word
-    )
+    try:
+        return " ".join("".join(MORSE_REVERSE[code] for code in word) for word in words if word)
+    except KeyError:
+        raise ValueError from None
 
 
 def _unicode_decode(text: str) -> str:
@@ -129,18 +117,13 @@ def _unicode_decode(text: str) -> str:
             code_point = int(digits, 16)
         except ValueError:
             code_point = -1
-        # surrogates can't be sent as text, so they're rejected with the invalid ones
         if not 0 <= code_point <= 0x10FFFF or 0xD800 <= code_point <= 0xDFFF:
             raise ValueError
         chars.append(chr(code_point))
     return "".join(chars)
 
 
-# each format's encoder takes text, and its decoder returns text or utf-8 bytes
-FORMATS: dict[
-    str,
-    tuple[str, Callable[[str], str], Callable[[str], str | bytes]],
-] = {
+FORMATS: dict[str, tuple[str, Callable[[str], str], Callable[[str], str | bytes]]] = {
     "base64": (
         "Base64",
         lambda text: base64.b64encode(text.encode("utf-8")).decode("ascii"),
@@ -208,11 +191,11 @@ def _decode_view(key: str, text: str) -> discord.ui.LayoutView:
 
 
 def _decode_menu_view(text: str, selected: str | None = None) -> discord.ui.LayoutView:
-    if selected is None:
-        view = ResponseUI("**Pick a format to decode this message from.**")
-    else:
-        view = _decode_view(selected, text)
-
+    view = (
+        ResponseUI("**Pick a format to decode this message from.**")
+        if selected is None
+        else _decode_view(selected, text)
+    )
     select = discord.ui.Select(
         placeholder="Decode from...",
         options=[
@@ -221,25 +204,15 @@ def _decode_menu_view(text: str, selected: str | None = None) -> discord.ui.Layo
         ],
     )
 
-    # each pick rebuilds the reply, keeping the thing so another format can be tried
     async def _callback(interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(
             view=_decode_menu_view(text, select.values[0]),
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=NO_MENTIONS,
         )
 
     select.callback = _callback
     view.container.add_item(discord.ui.ActionRow(select))
     return view
-
-
-def _urban_links(text: str) -> str:
-    # urban dictionary marks linked words with [brackets]
-    return re.sub(
-        r"\[([^\]]+)\]",
-        lambda m: f"[{m[1]}]({URBAN_DEFINE}{urllib.parse.quote(m[1])})",
-        text,
-    )
 
 
 def _urban_text(text: str, limit: int) -> str:
@@ -248,58 +221,84 @@ def _urban_text(text: str, limit: int) -> str:
         text = text[:limit].rstrip() + "..."
         if text.rfind("[") > text.rfind("]"):
             text = text[: text.rfind("[")].rstrip() + "..."
-    return _urban_links(text)
+    return URBAN_LINK.sub(
+        lambda m: f"[{m[1]}]({URBAN_DEFINE}{urllib.parse.quote(m[1])})",
+        text,
+    )
 
 
 def _urban_page(entry: dict) -> str:
     lines = [_urban_text(entry["definition"], URBAN_DEFINITION_LIMIT)]
-    example = entry.get("example", "").strip()
-    if example:
+    if entry.get("example", "").strip():
         quoted = "\n".join(
             f"> {line}"
-            for line in _urban_text(example, URBAN_EXAMPLE_LIMIT).split("\n")
+            for line in _urban_text(entry["example"], URBAN_EXAMPLE_LIMIT).split("\n")
         )
         lines.append(f"\n**Example**\n{quoted}")
-    written = entry.get("written_on", "")[:10]
     lines.append(
         f"\n-# {THUMBS_UP_WHITE} {entry['thumbs_up']}  {THUMBS_DOWN_WHITE} "
-        f"{entry['thumbs_down']} | by {entry['author'].strip()} on {written} | "
+        f"{entry['thumbs_down']} | by {entry['author'].strip()} on {entry.get('written_on', '')[:10]} | "
         f"{BROWSER} [Permalink]({entry['permalink']})",
     )
     return "\n".join(lines)
 
 
-async def _wiki_fetch(
+async def _get_json(
+    session: aiohttp.ClientSession,
     url: str,
+    *,
     params: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
     timeout: float = 10,
+    missing_ok: bool = False,
 ) -> dict | None:
-    async with (
-        aiohttp.ClientSession(headers=WIKI_HEADERS) as session,
-        session.get(
-            url,
-            params=params,
-            timeout=aiohttp.ClientTimeout(total=timeout),
-        ) as response,
-    ):
-        if response.status == 404:
+    async with session.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=timeout),
+    ) as response:
+        if missing_ok and response.status == 404:
             return None
         response.raise_for_status()
         return await response.json()
 
 
-async def _wiki_random() -> dict | None:
+async def _wiki_fetch(
+    session: aiohttp.ClientSession,
+    url: str,
+    params: dict[str, str] | None = None,
+    timeout: float = 10,
+) -> dict | None:
+    return await _get_json(
+        session,
+        url,
+        params=params,
+        headers=WIKI_HEADERS,
+        timeout=timeout,
+        missing_ok=True,
+    )
+
+
+async def _wiki_random(session: aiohttp.ClientSession) -> dict | None:
     for _ in range(3):
-        page = await _wiki_fetch(WIKI_RANDOM)
+        page = await _wiki_fetch(session, WIKI_RANDOM)
         if page is not None and page.get("type") == "standard":
             return page
     return None
 
 
 class WikiView(discord.ui.LayoutView):
-    def __init__(self, page: dict, *, random_mode: bool) -> None:
+    def __init__(
+        self,
+        page: dict,
+        session: aiohttp.ClientSession,
+        *,
+        random_mode: bool,
+    ) -> None:
         super().__init__(timeout=300)
         self.message: discord.Message | None = None
+        self.session = session
         self.random_mode = random_mode
         self.show(page)
 
@@ -308,8 +307,7 @@ class WikiView(discord.ui.LayoutView):
 
         heading = f"### {discord.utils.escape_markdown(page['title'])}"
         if page.get("description"):
-            description = discord.utils.escape_markdown(page["description"])
-            heading += f"\n-# **{description}**"
+            heading += f"\n-# **{discord.utils.escape_markdown(page['description'])}**"
 
         extract = page.get("extract", "").strip()
         if len(extract) > WIKI_EXTRACT_LIMIT:
@@ -317,8 +315,8 @@ class WikiView(discord.ui.LayoutView):
         body = discord.ui.TextDisplay(
             discord.utils.escape_markdown(extract) or "No summary available.",
         )
-
         thumbnail = page.get("thumbnail")
+
         container = discord.ui.Container(
             discord.ui.Section(
                 heading,
@@ -330,20 +328,14 @@ class WikiView(discord.ui.LayoutView):
                 ),
             ),
             SmallSeparator(),
-            discord.ui.Section(
-                body,
-                accessory=discord.ui.Thumbnail(thumbnail["source"]),
-            )
+            discord.ui.Section(body, accessory=discord.ui.Thumbnail(thumbnail["source"]))
             if thumbnail
             else body,
             SmallSeparator(),
         )
 
         if self.random_mode:
-            another = discord.ui.Button(
-                label="Another",
-                style=discord.ButtonStyle.secondary,
-            )
+            another = discord.ui.Button(label="Another", style=discord.ButtonStyle.secondary)
             another.callback = self.another
             container.add_item(discord.ui.ActionRow(another))
 
@@ -352,23 +344,17 @@ class WikiView(discord.ui.LayoutView):
     async def another(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         try:
-            page = await _wiki_random()
+            page = await _wiki_random(self.session)
         except aiohttp.ClientError, TimeoutError:
             log.exception("Wikipedia random lookup failed")
             page = None
 
         if page is None:
-            await interaction.followup.send(
-                view=ErrorUI("**Melvin couldn't reach Wikipedia, try again later.**"),
-                ephemeral=True,
-            )
+            await interaction.followup.send(view=ErrorUI(WIKI_UNREACHABLE), ephemeral=True)
             return
 
         self.show(page)
-        await interaction.edit_original_response(
-            view=self,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        await interaction.edit_original_response(view=self, allowed_mentions=NO_MENTIONS)
 
     async def on_timeout(self) -> None:
         for item in self.walk_children():
@@ -388,17 +374,20 @@ class ToolCog(
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__()
         self.bot = bot
+        self.session: aiohttp.ClientSession | None = None
         self.decode_menu = app_commands.ContextMenu(
             name="Decode",
             callback=self.decode_message,
         )
         self.bot.tree.add_command(self.decode_menu)
 
+    async def cog_load(self) -> None:
+        self.session = aiohttp.ClientSession()
+
     async def cog_unload(self) -> None:
-        self.bot.tree.remove_command(
-            self.decode_menu.name,
-            type=self.decode_menu.type,
-        )
+        self.bot.tree.remove_command(self.decode_menu.name, type=self.decode_menu.type)
+        if self.session is not None:
+            await self.session.close()
 
     async def decode_message(
         self,
@@ -415,7 +404,7 @@ class ToolCog(
         await interaction.response.send_message(
             view=_decode_menu_view(message.content),
             ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=NO_MENTIONS,
         )
 
     @app_commands.command(
@@ -434,7 +423,7 @@ class ToolCog(
         await interaction.response.defer()
         await interaction.edit_original_response(
             view=_encode_view(fmt.value, text),
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=NO_MENTIONS,
         )
 
     @app_commands.command(
@@ -453,7 +442,7 @@ class ToolCog(
         await interaction.response.defer()
         await interaction.edit_original_response(
             view=_decode_view(fmt.value, text),
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=NO_MENTIONS,
         )
 
     @app_commands.command(name="speak", description="Speak through Melvin.")
@@ -479,34 +468,20 @@ class ToolCog(
             await interaction.followup.send(view=GatedUI(), ephemeral=True)
             return
 
-        file = await attachment.to_file() if attachment is not None else None
-        mentions = discord.AllowedMentions.none()
+        kwargs = {"allowed_mentions": NO_MENTIONS}
+        if attachment is not None:
+            kwargs["file"] = await attachment.to_file()
 
         if not containerized:
-            # Raw text, with the attachment as a regular file
-            if file is not None:
-                await interaction.followup.send(
-                    text,
-                    file=file,
-                    allowed_mentions=mentions,
-                )
-            else:
-                await interaction.followup.send(text, allowed_mentions=mentions)
+            await interaction.followup.send(text, **kwargs)
             return
 
-        view = discord.ui.LayoutView()
         container = discord.ui.Container(discord.ui.TextDisplay(text))
+        if attachment is not None:
+            container.add_item(GalleryWithItem(f"attachment://{kwargs['file'].filename}"))
+        view = discord.ui.LayoutView()
         view.add_item(container)
-
-        if file is not None:
-            container.add_item(GalleryWithItem(f"attachment://{file.filename}"))
-            await interaction.followup.send(
-                view=view,
-                file=file,
-                allowed_mentions=mentions,
-            )
-        else:
-            await interaction.followup.send(view=view, allowed_mentions=mentions)
+        await interaction.followup.send(view=view, **kwargs)
 
     @app_commands.command(
         name="urban",
@@ -517,16 +492,7 @@ class ToolCog(
         await interaction.response.defer()
 
         try:
-            async with (
-                aiohttp.ClientSession() as session,
-                session.get(
-                    URBAN_API,
-                    params={"term": word},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as response,
-            ):
-                response.raise_for_status()
-                data = await response.json()
+            data = await _get_json(self.session, URBAN_API, params={"term": word})
         except aiohttp.ClientError, TimeoutError:
             log.exception("Urban Dictionary lookup failed")
             await interaction.followup.send(
@@ -540,16 +506,14 @@ class ToolCog(
         entries = data.get("list", [])
         if not entries:
             await interaction.followup.send(
-                view=ErrorUI(
-                    f"**No definitions found for `{word.replace('`', '')}`.**",
-                ),
+                view=ErrorUI(f"**No definitions found for `{word.replace('`', '')}`.**"),
                 ephemeral=True,
             )
             return
 
-        title_word = entries[0]["word"].replace("`", "")
+        word = entries[0]["word"]
         view = Paginator(
-            f"### {title_word}",
+            f"### {word.replace('`', '')}",
             [_urban_page(entry) for entry in entries],
             data_name="Definitions",
             per_page=1,
@@ -561,12 +525,12 @@ class ToolCog(
                 label="Urban Dictionary",
                 emoji=BROWSER,
                 style=discord.ButtonStyle.link,
-                url=URBAN_DEFINE + urllib.parse.quote(entries[0]["word"]),
+                url=URBAN_DEFINE + urllib.parse.quote(word),
             ),
         )
         view.message = await interaction.followup.send(
             view=view,
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=NO_MENTIONS,
             wait=True,
         )
 
@@ -578,8 +542,8 @@ class ToolCog(
         if not current.strip():
             return []
         try:
-            # discord stops waiting for suggestions after three seconds
             data = await _wiki_fetch(
+                self.session,
                 WIKI_SEARCH,
                 params={"q": current, "limit": "25"},
                 timeout=2.5,
@@ -608,63 +572,50 @@ class ToolCog(
         await interaction.response.defer()
 
         query = (query or "").strip()
-        page = None
         try:
             if query:
                 page = await _wiki_fetch(
+                    self.session,
                     WIKI_SUMMARY + urllib.parse.quote(query, safe=""),
                 )
             else:
-                page = await _wiki_random()
+                page = await _wiki_random(self.session)
         except aiohttp.ClientError, TimeoutError:
             log.exception("Wikipedia lookup failed")
-            failed = True
+            page, failed = None, True
         else:
-            # a random lookup only comes back empty when every try missed
             failed = page is None and not query
 
         if failed:
-            await interaction.followup.send(
-                view=ErrorUI("**Melvin couldn't reach Wikipedia, try again later.**"),
-                ephemeral=True,
+            error = WIKI_UNREACHABLE
+        elif page is None or page.get("type") == "mainpage":
+            error = f"**No Wikipedia article found for `{query.replace('`', '')}`.**"
+        elif page.get("type") == "disambiguation":
+            error = (
+                f"**`{page['title'].replace('`', '')}` could mean a few "
+                "different things, try something more specific or pick one "
+                "of the suggestions.**"
             )
+        else:
+            error = None
+        if error:
+            await interaction.followup.send(view=ErrorUI(error), ephemeral=True)
             return
 
-        if page is None or page.get("type") == "mainpage":
-            await interaction.followup.send(
-                view=ErrorUI(
-                    f"**No Wikipedia article found for `{query.replace('`', '')}`.**",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        if page.get("type") == "disambiguation":
-            await interaction.followup.send(
-                view=ErrorUI(
-                    f"**`{page['title'].replace('`', '')}` could mean a few "
-                    "different things, try something more specific or pick one "
-                    "of the suggestions.**",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        view = WikiView(page, random_mode=not query)
+        view = WikiView(page, self.session, random_mode=not query)
         view.message = await interaction.followup.send(
             view=view,
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=NO_MENTIONS,
             wait=True,
         )
 
     @app_commands.command(name="8ball", description="Game of fate")
-    @app_commands.describe(prompt="he prompt for the 8ball")
+    @app_commands.describe(prompt="The prompt for the 8ball")
     async def eightball(self, interaction: discord.Interaction, prompt: str) -> None:
         await interaction.response.defer(ephemeral=False)
         answer = random.choice(EIGHTBALL)
-        view = ResponseUI(f"**{prompt}**\n<:8ball:1548098650482413608>**{answer}**")
         await interaction.followup.send(
-            view=view,
+            view=ResponseUI(f"**{prompt}**\n<:8ball:1548098650482413608>**{answer}**"),
             allowed_mentions=discord.AllowedMentions(everyone=False),
         )
 

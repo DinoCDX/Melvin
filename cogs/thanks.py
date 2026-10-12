@@ -41,12 +41,9 @@ MODULE = Module(
     ),
 )
 
-# a user can give rate_int thanks per rate_time seconds. rate_time is only used when a
-# server hasn't set a cooldown in /thanks config
-rate_int = 1
-rate_time = 60.0
+DEFAULT_COOLDOWN = 60.0
 
-trigger = [
+TRIGGERS = (
     "thanks",
     "thx",
     "thank you",
@@ -58,9 +55,9 @@ trigger = [
     "appreciate it",
     "kudos",
     "props",
-]
+)
 
-negations = [
+NEGATIONS = (
     "no",
     "not",
     "dont",
@@ -77,20 +74,18 @@ negations = [
     "far from",
     "definitely not",
     "certainly not",
-]
-
-# word boundaries, so "ty" doesn't match inside "pretty"
-TRIGGER_PATTERN = re.compile(
-    r"\b(" + "|".join(re.escape(t) for t in trigger) + r")\b",
-    re.IGNORECASE,
 )
 
-# a negation right before a trigger cancels it, like "no thanks"
+_TRIGGER_GROUP = "(" + "|".join(map(re.escape, TRIGGERS)) + ")"
+TRIGGER_PATTERN = re.compile(rf"\b{_TRIGGER_GROUP}\b", re.IGNORECASE)
 NEGATION_PATTERN = re.compile(
-    r"\b(" + "|".join(re.escape(n) for n in negations) + r")\s+"
-    r"(" + "|".join(re.escape(t) for t in trigger) + r")\b",
+    r"\b(" + "|".join(map(re.escape, NEGATIONS)) + rf")\s+{_TRIGGER_GROUP}\b",
     re.IGNORECASE,
 )
+
+
+def _is_thanks(content: str) -> bool:
+    return bool(TRIGGER_PATTERN.search(content)) and not NEGATION_PATTERN.search(content)
 
 
 class ThanksCog(
@@ -102,7 +97,7 @@ class ThanksCog(
         super().__init__()
         self.bot = bot
         self.db_path = DATA_DIR / "thanks.db"
-        self._cooldowns: dict[int, list[float]] = {}
+        self._last_thanks: dict[int, float] = {}
 
     async def cog_load(self) -> None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -116,23 +111,21 @@ class ThanksCog(
             )
             await db.commit()
 
-            # thanks used to have its own on/off setting, move it over to the
-            # shared module settings once, then drop the old table
             async with db.execute(
                 "SELECT name FROM sqlite_master "
                 "WHERE type = 'table' AND name = 'thanks_settings'",
             ) as cursor:
-                has_old_settings = await cursor.fetchone() is not None
+                if await cursor.fetchone() is None:
+                    return
 
-            if has_old_settings:
-                async with db.execute(
-                    "SELECT guild_id FROM thanks_settings WHERE disabled = 1",
-                ) as cursor:
-                    disabled_guilds = [row[0] async for row in cursor]
-                for guild_id in disabled_guilds:
-                    await module_settings.set_enabled(guild_id, "thanks", enabled=False)
-                await db.execute("DROP TABLE thanks_settings")
-                await db.commit()
+            async with db.execute(
+                "SELECT guild_id FROM thanks_settings WHERE disabled = 1",
+            ) as cursor:
+                disabled_guilds = [row[0] async for row in cursor]
+            for guild_id in disabled_guilds:
+                await module_settings.set_enabled(guild_id, "thanks", enabled=False)
+            await db.execute("DROP TABLE thanks_settings")
+            await db.commit()
 
     async def cog_app_command_error(
         self,
@@ -154,11 +147,10 @@ class ThanksCog(
 
     def _is_rate_limited(self, user_id: int, window: float) -> bool:
         now = time.monotonic()
-        timestamps = self._cooldowns.setdefault(user_id, [])
-        timestamps[:] = [t for t in timestamps if now - t < window]
-        if len(timestamps) >= rate_int:
+        last = self._last_thanks.get(user_id)
+        if last is not None and now - last < window:
             return True
-        timestamps.append(now)
+        self._last_thanks[user_id] = now
         return False
 
     async def _add_thanks(self, user_id: int) -> int:
@@ -179,10 +171,7 @@ class ThanksCog(
     async def _get_thanks(self, user_id: int) -> int:
         async with (
             aiosqlite.connect(self.db_path) as db,
-            db.execute(
-                "SELECT count FROM thanks WHERE user_id = ?",
-                (user_id,),
-            ) as cursor,
+            db.execute("SELECT count FROM thanks WHERE user_id = ?", (user_id,)) as cursor,
         ):
             row = await cursor.fetchone()
             return row[0] if row else 0
@@ -198,10 +187,10 @@ class ThanksCog(
 
         if message.guild is not None:
             settings = await module_config.get_all(message.guild.id, "thanks")
-            cooldown = float(settings["cooldown"] or rate_time)
+            cooldown = float(settings["cooldown"] or DEFAULT_COOLDOWN)
             announce = settings["announce"] != "off"
         else:
-            cooldown, announce = rate_time, True
+            cooldown, announce = DEFAULT_COOLDOWN, True
 
         if self._is_rate_limited(thanker.id, cooldown):
             return
@@ -210,58 +199,47 @@ class ThanksCog(
         if not announce:
             return
 
-        view = ThankUI(
-            title=f"Thanks {thanked.mention}!",
-            subtitle=f"**{thanker.mention} thanked you, you now have {new_total} thanks.**",
-        )
         await message.channel.send(
-            view=view,
+            view=ThankUI(
+                title=f"Thanks {thanked.mention}!",
+                subtitle=f"**{thanker.mention} thanked you, you now have {new_total} thanks.**",
+            ),
             allowed_mentions=discord.AllowedMentions(everyone=False, users=False),
         )
 
+    async def _replied_author(self, message: discord.Message) -> discord.abc.User | None:
+        reference = message.reference
+        if reference is None or reference.message_id is None:
+            return None
+        replied = reference.resolved
+        if replied is None:
+            try:
+                replied = await message.channel.fetch_message(reference.message_id)
+            except discord.HTTPException:
+                return None
+        return replied.author if isinstance(replied, discord.Message) else None
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot:
+        if (
+            message.author.bot
+            or (message.reference is None and not message.mentions)
+            or not _is_thanks(message.content)
+        ):
             return
-
         if message.guild is not None and not await module_settings.is_enabled(
             message.guild.id,
             "thanks",
         ):
             return
 
-        content = message.content
-
-        if NEGATION_PATTERN.search(content):
+        replied_author = await self._replied_author(message)
+        if replied_author is not None:
+            await self._credit_thanks(message, message.author, replied_author)
             return
 
-        if not TRIGGER_PATTERN.search(content):
-            return
-
-        thanker = message.author
-
-        # a reply thanks whoever was replied to
-        if message.reference is not None and message.reference.message_id is not None:
-            replied_message = message.reference.resolved
-            if replied_message is None:
-                try:
-                    replied_message = await message.channel.fetch_message(
-                        message.reference.message_id,
-                    )
-                except discord.NotFound, discord.HTTPException:
-                    replied_message = None
-
-            if replied_message is not None and isinstance(
-                replied_message,
-                discord.Message,
-            ):
-                await self._credit_thanks(message, thanker, replied_message.author)
-                return  # mentions in a reply aren't credited as well
-
-        # otherwise, everyone mentioned is credited
-        if message.mentions:
-            for mentioned in message.mentions:
-                await self._credit_thanks(message, thanker, mentioned)
+        for mentioned in message.mentions:
+            await self._credit_thanks(message, message.author, mentioned)
 
     @app_commands.command(
         name="count",
@@ -274,12 +252,12 @@ class ThanksCog(
     ) -> None:
         target = user or interaction.user
         total = await self._get_thanks(target.id)
-
-        view = InfoUI(
-            title=f"{target.display_name}'s thanks",
-            subtitle=f"**Thanked {total} times.**",
+        await interaction.response.send_message(
+            view=InfoUI(
+                title=f"{target.display_name}'s thanks",
+                subtitle=f"**Thanked {total} times.**",
+            ),
         )
-        await interaction.response.send_message(view=view)
 
     @app_commands.command(
         name="config",

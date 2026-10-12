@@ -22,8 +22,9 @@ DENSITIES = {
 DENSITY_CHOICES = [
     app_commands.Choice(name=key.title(), value=key) for key in DENSITIES
 ]
-# covers the full 30 day range
 POPULATE_HOURS = 30 * 24
+LOG_COLOR = discord.Color.from_str(QUATERNARY)
+MAX_ARG_LENGTH = 100
 
 
 def _fake_stats(density: str) -> list[tuple[int, int, int, int]]:
@@ -58,6 +59,20 @@ def _fake_stats(density: str) -> list[tuple[int, int, int, int]]:
     return rows
 
 
+def _argument(value: object) -> str:
+    text = value.filename if isinstance(value, discord.Attachment) else str(value)
+    text = discord.utils.escape_mentions(discord.utils.escape_markdown(text))
+    return text[: MAX_ARG_LENGTH - 3] + "..." if len(text) > MAX_ARG_LENGTH else text
+
+
+def _location(interaction: discord.Interaction) -> str:
+    if interaction.guild:
+        return f"in {interaction.guild.name}"
+    if isinstance(interaction.channel, discord.DMChannel | discord.GroupChannel):
+        return "in DMs (invoked as app)"
+    return ""
+
+
 @app_commands.allowed_installs(guilds=True, users=False)
 @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 class PrivateCog(
@@ -69,13 +84,25 @@ class PrivateCog(
         super().__init__()
         self.bot = bot
 
+    def _log_channel(self) -> discord.TextChannel | None:
+        channel = self.bot.get_channel(LOG_CHANNEL)
+        return channel if isinstance(channel, discord.TextChannel) else None
+
+    async def _log(self, channel: discord.TextChannel, container: discord.ui.Container) -> None:
+        view = discord.ui.LayoutView()
+        view.add_item(container)
+        try:
+            await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            pass
+
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild) -> None:
-        log_channel = self.bot.get_channel(LOG_CHANNEL)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
+        channel = self._log_channel()
+        if channel is None:
             return
-        view = discord.ui.LayoutView()
-        view.add_item(
+        await self._log(
+            channel,
             discord.ui.Container(
                 discord.ui.TextDisplay(
                     f"**Melvin was just removed from {guild.name}.**\n"
@@ -84,13 +111,39 @@ class PrivateCog(
                 GalleryWithItem(MELVIN_BANNER),
             ),
         )
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
+
+    @commands.Cog.listener()
+    async def on_app_command_completion(
+        self,
+        interaction: discord.Interaction,
+        command: app_commands.Command,
+    ) -> None:
+        channel = self._log_channel()
+        if channel is None:
+            return
+
+        user = interaction.user
+        container = discord.ui.Container(
+            discord.ui.TextDisplay(
+                f"# {MELVIN_MISC_EMOJI} Command Used | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
+            ),
+            discord.ui.Section(
+                f"**User: {user.mention} | {user.id}**\n"
+                f"**Command: /{command.qualified_name} {_location(interaction)}**",
+                accessory=discord.ui.Thumbnail(media=user.display_avatar.url),
+            ),
+            accent_color=LOG_COLOR,
+        )
+
+        arguments = "\n".join(
+            f"**{key}: {_argument(value)}**"
+            for key, value in vars(interaction.namespace).items()
+        )
+        if arguments:
+            container.add_item(SmallSeparator())
+            container.add_item(discord.ui.TextDisplay(f"### Arguments\n{arguments}"))
+
+        await self._log(channel, container)
 
     @app_commands.command(
         name="populate",
@@ -105,91 +158,28 @@ class PrivateCog(
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         if not await self.bot.is_owner(interaction.user):
-            view = GatedUI()
-            await interaction.followup.send(view=view, ephemeral=True)
+            await interaction.followup.send(view=GatedUI(), ephemeral=True)
             return
         if interaction.guild_id is None:
-            view = ErrorUI("**This command only works in a server.**")
-            await interaction.followup.send(view=view, ephemeral=True)
+            await interaction.followup.send(
+                view=ErrorUI("**This command only works in a server.**"),
+                ephemeral=True,
+            )
             return
 
         rows = _fake_stats(density.value)
         await server_stats.init_db()
         await server_stats.replace(interaction.guild_id, rows)
-        view = PositiveUI(
-            title="Server Stats Populated",
-            subtitle=(
-                f"**Replaced this server's stats with {len(rows)} hours of "
-                f"{density.name.lower()} density data.**"
-            ),
-        )
-        await interaction.followup.send(view=view, ephemeral=True)
-
-    @commands.Cog.listener()
-    async def on_app_command_completion(
-        self,
-        interaction: discord.Interaction,
-        command: app_commands.Command,
-    ) -> None:
-        log_channel = self.bot.get_channel(LOG_CHANNEL)
-        if log_channel is None or not isinstance(log_channel, discord.TextChannel):
-            return
-
-        guild = interaction.guild
-
-        if guild:
-            location = f"in {guild.name}"
-        elif isinstance(interaction.channel, (discord.DMChannel, discord.GroupChannel)):
-            location = "in DMs (invoked as app)"
-        else:
-            location = ""
-
-        args_lines = []
-        if interaction.namespace:
-            for key, value in vars(interaction.namespace).items():
-                if isinstance(value, discord.Attachment):
-                    val = value.filename
-                else:
-                    val = str(value)
-
-                val = discord.utils.escape_markdown(val)
-                val = discord.utils.escape_mentions(val)
-                if len(val) > 100:
-                    val = val[:97] + "..."
-
-                args_lines.append(f"**{key}: {val}**")
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"# {MELVIN_MISC_EMOJI} Command Used | {discord.utils.format_dt(discord.utils.utcnow(), style='F')}",
-            ),
-            discord.ui.Section(
-                f"**User: {interaction.user.mention} | {interaction.user.id}**\n"
-                f"**Command: /{command.qualified_name} {location}**",
-                accessory=discord.ui.Thumbnail(
-                    media=interaction.user.display_avatar.url,
+        await interaction.followup.send(
+            view=PositiveUI(
+                title="Server Stats Populated",
+                subtitle=(
+                    f"**Replaced this server's stats with {len(rows)} hours of "
+                    f"{density.name.lower()} density data.**"
                 ),
             ),
-            accent_color=discord.Color.from_str(QUATERNARY),
+            ephemeral=True,
         )
-
-        if args_lines:
-            args_text = "\n".join(args_lines)
-            container.add_item(SmallSeparator())
-            container.add_item(
-                discord.ui.TextDisplay(f"### Arguments\n{args_text}"),
-            )
-
-        view = discord.ui.LayoutView()
-        view.add_item(container)
-
-        try:
-            await log_channel.send(
-                view=view,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.Forbidden, discord.HTTPException:
-            pass
 
 
 async def setup(bot: Melvin) -> None:

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import math
 from datetime import UTC, datetime
+from itertools import groupby
 
 import aiosqlite
 
@@ -29,11 +30,12 @@ STATE_LABELS = {
 
 log = logging.getLogger(__name__)
 
+_db_ready = False
+
 
 def set_start_time() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(UTC).isoformat()
-    START_TIME_FILE.write_text(now, encoding="utf-8")
+    START_TIME_FILE.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
 
 
 def _get_start_time() -> datetime | None:
@@ -47,14 +49,10 @@ def _get_start_time() -> datetime | None:
     return None
 
 
-def _format_uptime(start: datetime) -> str:
-    return _format_seconds(int((datetime.now(UTC) - start).total_seconds()))
-
-
 def _format_seconds(seconds: int) -> str:
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
-    minutes, _ = divmod(seconds, 60)
+    minutes = seconds // 60
 
     if days:
         return f"{days}d {hours}h"
@@ -63,115 +61,8 @@ def _format_seconds(seconds: int) -> str:
     return f"{minutes}m"
 
 
-_state = {"db_ready": False}
-
-
-async def init_db() -> None:
-    # the tables only need setting up once per process
-    if _state["db_ready"]:
-        return
-
-    await asyncio.to_thread(DATA_DIR.mkdir, parents=True, exist_ok=True)
-    async with aiosqlite.connect(DB_PATH) as db:
-        # the bot writes while the status page reads, WAL keeps them from blocking each other
-        await db.execute("PRAGMA journal_mode=WAL")
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS shard_latency (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                shard_id INTEGER NOT NULL,
-                latency_ms REAL NOT NULL,
-                api_latency_ms REAL,
-                checked_at TEXT NOT NULL
-            )
-            """,
-        )
-        cursor = await db.execute("PRAGMA table_info(shard_latency)")
-        columns = {row[1] for row in await cursor.fetchall()}
-        if "api_latency_ms" not in columns:
-            await db.execute("ALTER TABLE shard_latency ADD COLUMN api_latency_ms REAL")
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_shard_latency_shard_checked "
-            "ON shard_latency (shard_id, checked_at)",
-        )
-
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS bot_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_count INTEGER NOT NULL,
-                member_count INTEGER NOT NULL,
-                checked_at TEXT NOT NULL
-            )
-            """,
-        )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_bot_metrics_checked ON bot_metrics (checked_at)",
-        )
-        await db.commit()
-    _state["db_ready"] = True
-
-
-async def record_latency(
-    shard_id: int,
-    latency_ms: float,
-    api_latency_ms: float,
-) -> None:
-    await init_db()
-    checked_at = datetime.now(UTC).isoformat()
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO shard_latency (shard_id, latency_ms, api_latency_ms, checked_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (shard_id, latency_ms, api_latency_ms, checked_at),
-        )
-        await db.execute(
-            """
-            DELETE FROM shard_latency
-            WHERE shard_id = ? AND id NOT IN (
-                SELECT id FROM shard_latency
-                WHERE shard_id = ?
-                ORDER BY checked_at DESC
-                LIMIT ?
-            )
-            """,
-            (shard_id, shard_id, MAX_HISTORY_POINTS),
-        )
-        await db.commit()
-
-
-async def record_metrics(guild_count: int, member_count: int) -> None:
-    await init_db()
-    checked_at = datetime.now(UTC).isoformat()
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO bot_metrics (guild_count, member_count, checked_at)
-            VALUES (?, ?, ?)
-            """,
-            (guild_count, member_count, checked_at),
-        )
-        await db.execute(
-            """
-            DELETE FROM bot_metrics
-            WHERE id NOT IN (
-                SELECT id FROM bot_metrics
-                ORDER BY checked_at DESC
-                LIMIT ?
-            )
-            """,
-            (MAX_HISTORY_POINTS,),
-        )
-        await db.commit()
-
-
 def _seconds_since(checked_at: str) -> int:
-    checked = datetime.fromisoformat(checked_at)
-    return int((datetime.now(UTC) - checked).total_seconds())
+    return int((datetime.now(UTC) - datetime.fromisoformat(checked_at)).total_seconds())
 
 
 def _format_relative(checked_at: str) -> str:
@@ -199,21 +90,96 @@ def _format_span(rows: list[aiosqlite.Row]) -> str | None:
     return _format_seconds(seconds) if seconds >= 60 else None
 
 
-def _scale(values: list[float], lo: float, hi: float) -> list[float]:
-    return charts.scale(values, lo, hi, CHART_HEIGHT)
+async def init_db() -> None:
+    global _db_ready
+    if _db_ready:
+        return
+
+    await asyncio.to_thread(DATA_DIR.mkdir, parents=True, exist_ok=True)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shard_latency (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shard_id INTEGER NOT NULL,
+                latency_ms REAL NOT NULL,
+                api_latency_ms REAL,
+                checked_at TEXT NOT NULL
+            )
+            """,
+        )
+        cursor = await db.execute("PRAGMA table_info(shard_latency)")
+        if "api_latency_ms" not in {row[1] for row in await cursor.fetchall()}:
+            await db.execute("ALTER TABLE shard_latency ADD COLUMN api_latency_ms REAL")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shard_latency_shard_checked "
+            "ON shard_latency (shard_id, checked_at)",
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_count INTEGER NOT NULL,
+                member_count INTEGER NOT NULL,
+                checked_at TEXT NOT NULL
+            )
+            """,
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bot_metrics_checked ON bot_metrics (checked_at)",
+        )
+        await db.commit()
+    _db_ready = True
 
 
-def _area(ys: list[float]) -> str:
-    return charts.area_points(ys, CHART_WIDTH, CHART_HEIGHT)
+async def record_latency(shard_id: int, latency_ms: float, api_latency_ms: float) -> None:
+    await init_db()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO shard_latency (shard_id, latency_ms, api_latency_ms, checked_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (shard_id, latency_ms, api_latency_ms, datetime.now(UTC).isoformat()),
+        )
+        await db.execute(
+            """
+            DELETE FROM shard_latency
+            WHERE shard_id = ? AND id NOT IN (
+                SELECT id FROM shard_latency
+                WHERE shard_id = ?
+                ORDER BY checked_at DESC
+                LIMIT ?
+            )
+            """,
+            (shard_id, shard_id, MAX_HISTORY_POINTS),
+        )
+        await db.commit()
 
 
-def _tooltip(
-    rows: list[aiosqlite.Row],
-    ys: list[float],
-    series: list[tuple[str, list[float], str, str]],
-) -> list[dict]:
-    whens = [_format_relative(row["checked_at"]) for row in rows]
-    return charts.tooltip_points(whens, ys, CHART_HEIGHT, series)
+async def record_metrics(guild_count: int, member_count: int) -> None:
+    await init_db()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO bot_metrics (guild_count, member_count, checked_at)
+            VALUES (?, ?, ?)
+            """,
+            (guild_count, member_count, datetime.now(UTC).isoformat()),
+        )
+        await db.execute(
+            """
+            DELETE FROM bot_metrics
+            WHERE id NOT IN (
+                SELECT id FROM bot_metrics
+                ORDER BY checked_at DESC
+                LIMIT ?
+            )
+            """,
+            (MAX_HISTORY_POINTS,),
+        )
+        await db.commit()
 
 
 def _shard_state(latency_ms: float, api_latency_ms: float, checked_at: str) -> str:
@@ -225,85 +191,82 @@ def _shard_state(latency_ms: float, api_latency_ms: float, checked_at: str) -> s
 
 
 def summarize_status(shards: list[dict]) -> dict[str, str]:
-    if not shards:
-        state = "unknown"
-    else:
-        state = max((shard["state"] for shard in shards), key=STATE_ORDER.index)
+    state = (
+        max((shard["state"] for shard in shards), key=STATE_ORDER.index)
+        if shards
+        else "unknown"
+    )
     return {"state": state, "label": STATE_LABELS[state]}
+
+
+def _build_shard(shard_id: int, rows: list[aiosqlite.Row], uptime: str) -> dict:
+    gateway_history = [row["latency_ms"] for row in rows]
+    api_history = [row["api_latency_ms"] or 0.0 for row in rows]
+    lo = min(min(gateway_history), min(api_history))
+    hi = max(max(gateway_history), max(api_history))
+    gateway_ys = charts.scale(gateway_history, lo, hi, CHART_HEIGHT)
+    api_ys = charts.scale(api_history, lo, hi, CHART_HEIGHT)
+    peak_ys = [min(g, a) for g, a in zip(gateway_ys, api_ys, strict=True)]
+    latest = rows[-1]
+    latency_ms = round(gateway_history[-1])
+    api_latency_ms = round(api_history[-1])
+
+    return {
+        "shard_id": shard_id,
+        "state": _shard_state(latency_ms, api_latency_ms, latest["checked_at"]),
+        "latency_ms": latency_ms,
+        "api_latency_ms": api_latency_ms,
+        "last_checked": _format_relative(latest["checked_at"]),
+        "uptime": uptime,
+        "span": _format_span(rows),
+        "chart_points": charts.area_points(gateway_ys, CHART_WIDTH, CHART_HEIGHT),
+        "api_chart_points": charts.area_points(api_ys, CHART_WIDTH, CHART_HEIGHT),
+        "tooltip_points": charts.tooltip_points(
+            [_format_relative(row["checked_at"]) for row in rows],
+            peak_ys,
+            CHART_HEIGHT,
+            [
+                ("Gateway", gateway_history, "ms", "series-1"),
+                ("API", api_history, "ms", "series-2"),
+            ],
+        ),
+        "chart_width": CHART_WIDTH,
+        "chart_height": CHART_HEIGHT,
+    }
 
 
 async def get_shard_status() -> list[dict]:
     await init_db()
 
     start_time = _get_start_time()
-    uptime = _format_uptime(start_time) if start_time else "—"
+    uptime = (
+        _format_seconds(int((datetime.now(UTC) - start_time).total_seconds()))
+        if start_time
+        else "—"
+    )
 
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-
-        cursor = await db.execute(
-            "SELECT DISTINCT shard_id FROM shard_latency ORDER BY shard_id ASC",
-        )
-        shard_ids = [row["shard_id"] for row in await cursor.fetchall()]
-
-        shards = []
-        for shard_id in shard_ids:
-            cursor = await db.execute(
-                """
-                SELECT latency_ms, api_latency_ms, checked_at FROM shard_latency
-                WHERE shard_id = ?
-                ORDER BY checked_at DESC
-                LIMIT ?
-                """,
-                (shard_id, MAX_HISTORY_POINTS),
+        async with db.execute(
+            """
+            SELECT shard_id, latency_ms, api_latency_ms, checked_at FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY shard_id ORDER BY checked_at DESC
+                ) AS rank
+                FROM shard_latency
             )
-            # handle disconnects
-            rows = [
-                row
-                for row in reversed(await cursor.fetchall())
-                if math.isfinite(row["latency_ms"])
-            ]
-            if not rows:
-                continue
+            WHERE rank <= ?
+            ORDER BY shard_id, checked_at
+            """,
+            (MAX_HISTORY_POINTS,),
+        ) as cursor:
+            all_rows = await cursor.fetchall()
 
-            gateway_history = [row["latency_ms"] for row in rows]
-            api_history = [row["api_latency_ms"] or 0.0 for row in rows]
-            latest = rows[-1]
-            combined = gateway_history + api_history
-            lo, hi = min(combined), max(combined)
-            gateway_ys = _scale(gateway_history, lo, hi)
-            api_ys = _scale(api_history, lo, hi)
-            latency_ms = round(latest["latency_ms"])
-            api_latency_ms = round(latest["api_latency_ms"] or 0.0)
-
-            shards.append(
-                {
-                    "shard_id": shard_id,
-                    "state": _shard_state(
-                        latency_ms,
-                        api_latency_ms,
-                        latest["checked_at"],
-                    ),
-                    "latency_ms": latency_ms,
-                    "api_latency_ms": api_latency_ms,
-                    "last_checked": _format_relative(latest["checked_at"]),
-                    "uptime": uptime,
-                    "span": _format_span(rows),
-                    "chart_points": _area(gateway_ys),
-                    "api_chart_points": _area(api_ys),
-                    "tooltip_points": _tooltip(
-                        rows,
-                        gateway_ys,
-                        [
-                            ("Gateway", gateway_history, "ms", "series-1"),
-                            ("API", api_history, "ms", "series-2"),
-                        ],
-                    ),
-                    "chart_width": CHART_WIDTH,
-                    "chart_height": CHART_HEIGHT,
-                },
-            )
-
+    shards = []
+    for shard_id, group in groupby(all_rows, key=lambda row: row["shard_id"]):
+        rows = [row for row in group if math.isfinite(row["latency_ms"])]
+        if rows:
+            shards.append(_build_shard(shard_id, rows, uptime))
     return shards
 
 
@@ -311,8 +274,10 @@ async def _get_command_count() -> int:
     if not await asyncio.to_thread(STATS_DB_PATH.is_file):
         return 0
     try:
-        async with aiosqlite.connect(STATS_DB_PATH) as db:
-            cursor = await db.execute("SELECT COUNT(*) FROM command_logs")
+        async with (
+            aiosqlite.connect(STATS_DB_PATH) as db,
+            db.execute("SELECT COUNT(*) FROM command_logs") as cursor,
+        ):
             row = await cursor.fetchone()
     except aiosqlite.OperationalError:
         log.exception("counting commands failed")
@@ -320,26 +285,31 @@ async def _get_command_count() -> int:
     return row[0] if row else 0
 
 
-async def get_metrics_status() -> dict | None:
+async def _get_latest_metrics() -> aiosqlite.Row | None:
     await init_db()
-
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
+        async with db.execute(
             """
             SELECT guild_count, member_count, checked_at FROM bot_metrics
             ORDER BY checked_at DESC
             LIMIT 1
             """,
-        )
-        latest = await cursor.fetchone()
+        ) as cursor:
+            return await cursor.fetchone()
 
+
+async def get_metrics_status() -> dict | None:
+    latest, command_count = await asyncio.gather(
+        _get_latest_metrics(),
+        _get_command_count(),
+    )
     if not latest:
         return None
 
     return {
         "guild_count": latest["guild_count"],
         "member_count": latest["member_count"],
-        "command_count": await _get_command_count(),
+        "command_count": command_count,
         "last_checked": _format_relative(latest["checked_at"]),
     }

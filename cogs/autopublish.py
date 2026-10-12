@@ -36,7 +36,6 @@ MODULE = Module(
 log = logging.getLogger(__name__)
 
 
-# server only, installed to a server and used in it, never in dms or as a user app
 @app_commands.allowed_installs(guilds=True, users=False)
 @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
 class AutoPublishCog(
@@ -77,41 +76,32 @@ class AutoPublishCog(
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        # checked first, since it doesn't need the database
+        guild = message.guild
         if (
-            message.guild is None
+            guild is None
             or message.channel.type is not discord.ChannelType.news
+            or message.is_system()
+            or message.author.system
+            or not await module_settings.is_enabled(guild.id, "autopublish")
         ):
             return
-        # system messages, like "thread created", can't be published
-        if message.is_system() or message.author.system:
-            return
-        if not await module_settings.is_enabled(message.guild.id, "autopublish"):
-            return
 
-        settings = await module_config.get_all(message.guild.id, "autopublish")
-        if str(message.channel.id) not in (settings["channels"] or "").split(","):
-            return
-        # webhook messages count as bot messages
+        settings = await module_config.get_all(guild.id, "autopublish")
         if message.author.bot and settings["bots"] != "on":
             return
+        if str(message.channel.id) not in (settings["channels"] or "").split(","):
+            return
 
-        # discord allows 10 publishes per channel per hour. discord.py waits out the limit,
-        # so messages past it are published late
         try:
             await message.publish()
         except discord.Forbidden:
             log.info(
                 "Missing permissions to publish in channel %s of guild %s",
                 message.channel.id,
-                message.guild.id,
+                guild.id,
             )
         except discord.HTTPException:
-            log.warning(
-                "Couldn't publish message %s in guild %s",
-                message.id,
-                message.guild.id,
-            )
+            log.warning("Couldn't publish message %s in guild %s", message.id, guild.id)
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild) -> None:

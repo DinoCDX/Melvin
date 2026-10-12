@@ -1002,12 +1002,11 @@ async def server_stats_page(guild_id: int) -> str | Response:
     width, height = STATS_CHART_WIDTH, STATS_CHART_HEIGHT
     whens = [_time_ago(start) for start in series["starts"]]
 
-    # messages and voice minutes are stacked, so their scale starts at zero
     messages, voice = series["messages"], series["voice"]
-    totals = [m + v for m, v in zip(messages, voice, strict=True)]
-    top = max(totals) or 1
-    total_ys = charts.scale(totals, 0, top, height)
+    top = max(*messages, *voice, 1)
     message_ys = charts.scale(messages, 0, top, height)
+    voice_ys = charts.scale(voice, 0, top, height)
+    peak_ys = [min(m, v) for m, v in zip(message_ys, voice_ys, strict=True)]
 
     # the member scale fits the counts, like the status charts, so changes are visible.
     # periods before the first reading use the first reading
@@ -1057,10 +1056,10 @@ async def server_stats_page(guild_id: int) -> str | Response:
         ],
         activity={
             "messages": charts.area_points(message_ys, width, height),
-            "voice": charts.band_points(total_ys, message_ys, width),
+            "voice": charts.area_points(voice_ys, width, height),
             "tooltip": charts.tooltip_points(
                 whens,
-                total_ys,
+                peak_ys,
                 height,
                 [
                     ("Messages", messages, "", "series-1"),

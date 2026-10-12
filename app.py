@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import functools
 import html
@@ -35,41 +36,64 @@ log = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY")
 if not app.secret_key:
-    # still works, but everyone gets logged out of the dashboard on every restart
     log.warning("SECRET_KEY isn't set, using a temporary one")
     app.secret_key = secrets.token_hex(32)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    # browsers still accept secure cookies on http://localhost
     SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "true").lower()
     == "true",
     PERMANENT_SESSION_LIFETIME=datetime.timedelta(days=7),
-    # a little over the 8 MB image limit, so flask turns away anything bigger
-    # before reading it, instead of the dashboard finding out afterwards
     MAX_CONTENT_LENGTH=9 * 1024 * 1024,
 )
 app.register_blueprint(dashboard.bp)
 
+ROOT = Path(app.root_path)
+DOCS_DIR = ROOT / "docs"
+LEGAL_DIR = ROOT / "legal"
+BOT_STATS_FILE = DATA_DIR / "bot_stats.json"
+MIN_GUILDS_FOR_STATS = 70
 
-@app.after_request
-def add_security_headers(response: Response) -> Response:
-    # no framing the site, no guessing file types, and no full urls sent to other sites
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "same-origin")
-    return response
+GITHUB_API = "https://api.github.com/repos/saltgranule/Melvin"
+HIDDEN_CONTRIBUTORS = {"replit-agent"}
+SHOWN_CONTRIBUTORS = 6
+REPO_META_TTL = 600
+
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+}
+
+ERROR_MESSAGES = {
+    400: "Invalid request body, try again?",
+    401: "This page requires you to be logged in",
+    403: "Nope, you don't have permission to view this page",
+    404: "Page doesn't exist, or was removed",
+    405: "Invalid request",
+    413: "Too big of an upload",
+    429: "Too many requests",
+    500: "Melvin is dead",
+    502: "Discord is dead",
+    503: "Melvin is dead",
+}
 
 
-DOCS_DIR = Path(app.root_path) / "docs"
-LEGAL_DIR = Path(app.root_path) / "legal"
-bot_process = None
+def _rgb(color: str) -> tuple[int, int, int]:
+    value = int(color.lstrip("#"), 16)
+    return value >> 16, (value >> 8) & 0xFF, value & 0xFF
 
 
-def start_bot() -> None:
-    globals()["bot_process"] = subprocess.Popen(
-        [sys.executable, str(Path(app.root_path) / "main.py")],
+def mix(color: str, other: str, weight: float) -> str:
+    return "#" + "".join(
+        f"{round(x * weight + y * (1 - weight)):02x}"
+        for x, y in zip(_rgb(color), _rgb(other), strict=True)
     )
+
+
+def alpha(color: str, opacity: float) -> str:
+    r, g, b = _rgb(color)
+    return f"rgba({r}, {g}, {b}, {opacity})"
 
 
 THEME = {
@@ -78,20 +102,6 @@ THEME = {
     "tertiary": TERTIARY,
     "quaternary": QUATERNARY,
 }
-
-
-def mix(color: str, other: str, weight: float) -> str:
-    a = [int(color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4)]
-    b = [int(other.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4)]
-    return "#" + "".join(
-        f"{round(x * weight + y * (1 - weight)):02x}" for x, y in zip(a, b, strict=True)
-    )
-
-
-def alpha(color: str, opacity: float) -> str:
-    r, g, b = (int(color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
-    return f"rgba({r}, {g}, {b}, {opacity})"
-
 
 DARK_SURFACE = "#252422"
 _dark_chart_2_fill = mix(PRIMARY, "#ffffff", 0.55)
@@ -117,6 +127,21 @@ LINKS = {
     "github": MELVIN_GITHUB_URL,
 }
 
+bot_process: subprocess.Popen | None = None
+_repo_meta: tuple[float, dict] | None = None
+
+
+def start_bot() -> None:
+    global bot_process
+    bot_process = subprocess.Popen([sys.executable, str(ROOT / "main.py")])
+
+
+@app.after_request
+def add_security_headers(response: Response) -> Response:
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
+
 
 @app.context_processor
 def inject_globals() -> dict:
@@ -131,80 +156,66 @@ def inject_globals() -> dict:
     }
 
 
-GITHUB_REPO = "saltgranule/Melvin"
-GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}"
-HIDDEN_CONTRIBUTORS = {"replit-agent"}
-REPO_META_TTL = 600
-_repo_meta_cache = {"data": None, "fetched_at": 0}
-
-
 def _github_get(path: str) -> dict | list:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "Melvin-Frontend",
     }
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
+    if token := os.environ.get("GITHUB_TOKEN"):
         headers["Authorization"] = f"Bearer {token}"
     return http_client.fetch_json(f"{GITHUB_API}{path}", headers=headers, timeout=5)
 
 
 def get_repo_meta() -> dict:
+    global _repo_meta
     now = time.time()
-    cached = _repo_meta_cache["data"]
-    if cached is not None and now - _repo_meta_cache["fetched_at"] < REPO_META_TTL:
-        return cached
-
-    contributors = []
+    if _repo_meta is not None and now - _repo_meta[0] < REPO_META_TTL:
+        return _repo_meta[1]
 
     try:
-        raw_contributors = _github_get("/contributors?per_page=30")
         contributors = [
             {
                 "login": c["login"],
                 "avatar_url": c["avatar_url"],
                 "html_url": c["html_url"],
             }
-            for c in raw_contributors
+            for c in _github_get("/contributors?per_page=30")
             if c.get("type") == "User"
             and c.get("login", "").lower() not in HIDDEN_CONTRIBUTORS
         ]
     except http_client.RequestError:
-        pass
+        contributors = []
 
     data = {
-        "contributors": contributors[:6],
-        "extra_contributors": max(0, len(contributors) - 6),
+        "contributors": contributors[:SHOWN_CONTRIBUTORS],
+        "extra_contributors": max(0, len(contributors) - SHOWN_CONTRIBUTORS),
     }
-
-    _repo_meta_cache["data"] = data
-    _repo_meta_cache["fetched_at"] = now
+    _repo_meta = (now, data)
     return data
 
 
-BOT_STATS_FILE = DATA_DIR / "bot_stats.json"
-# best idea to hide index stats until interval
-MIN_GUILDS_FOR_STATS = 70
+@functools.lru_cache(maxsize=1)
+def _read_bot_stats(_mtime: float) -> dict[str, int]:
+    try:
+        raw = json.loads(BOT_STATS_FILE.read_text(encoding="utf-8"))
+        return {
+            "guild_count": int(raw.get("guild_count", 0)),
+            "member_count": int(raw.get("member_count", 0)),
+        }
+    except ValueError, OSError:
+        return {"guild_count": 0, "member_count": 0}
 
 
 def get_bot_stats() -> dict[str, int]:
     try:
-        raw = json.loads(BOT_STATS_FILE.read_text(encoding="utf-8"))
-        guild_count = int(raw.get("guild_count", 0))
-        member_count = int(raw.get("member_count", 0))
-    except FileNotFoundError, ValueError, OSError:
-        guild_count = 0
-        member_count = 0
-
-    return {
-        "guild_count": guild_count,
-        "member_count": member_count,
-    }
+        mtime = BOT_STATS_FILE.stat().st_mtime
+    except OSError:
+        return {"guild_count": 0, "member_count": 0}
+    return _read_bot_stats(mtime)
 
 
 @functools.lru_cache(maxsize=64)
 def _parse_doc(path: Path, _mtime: float) -> dict:
-    # _mtime is only part of the cache key, so edited docs get re-parsed
     text = path.read_text(encoding="utf-8")
     md = markdown.Markdown(
         extensions=["fenced_code", "tables", "toc"],
@@ -212,11 +223,10 @@ def _parse_doc(path: Path, _mtime: float) -> dict:
     )
     content = md.convert(text)
 
-    title = path.stem.replace("-", " ").replace("_", " ").title()
-    for line in text.splitlines():
-        if line.startswith("# "):
-            title = line[2:].strip()
-            break
+    title = next(
+        (line[2:].strip() for line in text.splitlines() if line.startswith("# ")),
+        path.stem.replace("-", " ").replace("_", " ").title(),
+    )
 
     headings = []
     for token in md.toc_tokens:
@@ -250,9 +260,7 @@ def get_docs_list() -> list[dict]:
 
 def render_doc(slug: str) -> dict | None:
     path = DOCS_DIR / f"{slug}.md"
-    if not path.is_file():
-        return None
-    return load_doc(path)
+    return load_doc(path) if path.is_file() else None
 
 
 @app.route("/")
@@ -293,46 +301,32 @@ def docs_page(slug: str) -> str:
 
 @app.route("/status")
 async def status() -> str:
-    shards = await get_shard_status()
+    shards, metrics = await asyncio.gather(get_shard_status(), get_metrics_status())
     return render_template(
         "status.html",
         active="status",
         shards=shards,
         overall=summarize_status(shards),
-        metrics=await get_metrics_status(),
+        metrics=metrics,
     )
 
 
-def legal_page(slug: str, active: str) -> str:
+def legal_page(slug: str) -> str:
     return render_template(
         "legal.html",
-        active=active,
+        active=slug,
         doc=load_doc(LEGAL_DIR / f"{slug}.md"),
     )
 
 
 @app.route("/privacy")
 def privacy() -> str:
-    return legal_page("privacy", "privacy")
+    return legal_page("privacy")
 
 
 @app.route("/terms")
 def terms() -> str:
-    return legal_page("terms", "terms")
-
-
-ERROR_MESSAGES = {
-    400: "Invalid request body, try again?",
-    401: "This page requires you to be logged in",
-    403: "Nope, you don't have permission to view this page",
-    404: "Page doesn't exist, or was removed",
-    405: "Invalid request",
-    413: "Too big of an upload",
-    429: "Too many requests",
-    500: "Melvin is dead",
-    502: "Discord is dead",
-    503: "Melvin is dead",
-}
+    return legal_page("terms")
 
 
 def error_page(error: HTTPException) -> tuple[str, int]:

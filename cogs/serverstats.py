@@ -17,8 +17,15 @@ MODULE = Module(
 log = logging.getLogger(__name__)
 
 
-# a plain cog rather than a GroupCog, since it has no commands, an empty group would
-# show up in discord as a command that does nothing. it's still the serverstats module
+def _voice_members(guild: discord.Guild) -> int:
+    return sum(
+        not member.bot
+        for channel in (*guild.voice_channels, *guild.stage_channels)
+        if channel != guild.afk_channel
+        for member in channel.members
+    )
+
+
 class ServerStatsCog(
     commands.Cog,
     name="serverstats",
@@ -27,8 +34,8 @@ class ServerStatsCog(
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__()
         self.bot = bot
-        # messages are counted here and written once a minute, not once per message
         self._messages: Counter[int] = Counter()
+        self._written: dict[int, tuple[int, int | None]] = {}
         self._pruned_hour = 0
 
     async def cog_load(self) -> None:
@@ -41,43 +48,29 @@ class ServerStatsCog(
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.guild is None or message.author.bot:
-            return
-        self._messages[message.guild.id] += 1
-
-    def _voice_members(self, guild: discord.Guild) -> int:
-        # people in voice right now, leaving out bots and the afk channel
-        channels = [*guild.voice_channels, *guild.stage_channels]
-        return sum(
-            1
-            for channel in channels
-            if channel != guild.afk_channel
-            for member in channel.members
-            if not member.bot
-        )
+        if message.guild is not None and not message.author.bot:
+            self._messages[message.guild.id] += 1
 
     async def _flush(self, *, with_voice: bool = False) -> None:
         hour = server_stats.hour_start()
         messages, self._messages = self._messages, Counter()
+        disabled = await module_settings.guilds_disabling("serverstats")
 
         rows = []
         for guild in self.bot.guilds:
-            # guilds that turned the module off aren't counted, their messages are dropped
-            if not await module_settings.is_enabled(guild.id, "serverstats"):
+            if guild.id in disabled:
                 continue
-            rows.append(
-                (
-                    guild.id,
-                    hour,
-                    messages.pop(guild.id, 0),
-                    self._voice_members(guild) if with_voice else 0,
-                    guild.member_count,
-                ),
-            )
+            count = messages[guild.id]
+            voice = _voice_members(guild) if with_voice else 0
+            snapshot = (hour, guild.member_count)
+            if count or voice or self._written.get(guild.id) != snapshot:
+                rows.append((guild.id, hour, count, voice, guild.member_count))
+
         if rows:
             await server_stats.record(rows)
+            for guild_id, row_hour, _, _, members in rows:
+                self._written[guild_id] = (row_hour, members)
 
-    # every minute, each person in voice adds a minute and pending messages are saved
     @tasks.loop(minutes=1)
     async def collect(self) -> None:
         try:

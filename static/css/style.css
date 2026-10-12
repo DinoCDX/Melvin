@@ -1,4 +1,3 @@
-/* self-hosted arcon, the cdn was blocked or slow on some browsers */
 @font-face {
     font-family: 'Melvin Sans';
     font-style: normal;
@@ -32,7 +31,6 @@
     --tooltip-bg: #252422;
     --chart-1-opacity: 0.55;
     --chart-2-opacity: 0.7;
-    /* the chart, mark and switch edge shades come from THEME_SHADES in app.py, set in base.html */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -54,7 +52,6 @@
     }
 }
 
-/* base */
 * {
     margin: 0;
     padding: 0;
@@ -85,12 +82,6 @@ a {
     color: #252422;
 }
 
-::-moz-selection {
-    background: var(--primary);
-    color: #252422;
-}
-
-/* banners. their colors come from globals.py, through the theme variables in base.html */
 .banner {
     display: flex;
     align-items: flex-start;
@@ -107,7 +98,6 @@ a {
     display: none;
 }
 
-/* lined up with the first line of text */
 .banner-icon {
     flex: 0 0 auto;
     margin-top: 2px;
@@ -121,13 +111,11 @@ a {
     background: var(--tertiary);
 }
 
-/* dark text, since white on the primary orange is too hard to read */
 .banner-misc {
     background: var(--primary);
     color: #252422;
 }
 
-/* shared */
 :focus-visible {
     outline: 2px solid var(--primary);
     outline-offset: 2px;
@@ -150,7 +138,6 @@ a {
     padding-right: 24px;
 }
 
-/* navbar */
 .navbar {
     display: flex;
     align-items: center;
@@ -190,10 +177,7 @@ a {
     transition: color 150ms ease, border-color 150ms ease;
 }
 
-.navbar-link:hover {
-    color: #e8e6e3;
-}
-
+.navbar-link:hover,
 .navbar-link.is-active {
     color: #e8e6e3;
 }
@@ -220,7 +204,6 @@ a {
     color: #e8e6e3;
 }
 
-/* footer */
 .site-footer {
     background: #252422;
     color: #a8a49c;
@@ -293,7 +276,6 @@ a {
     color: #97938b;
 }
 
-/* home page */
 .hero {
     display: flex;
     align-items: center;
@@ -420,8 +402,6 @@ a {
     color: var(--text-subtle);
 }
 
-/* cover hero, the photo sits behind the content under a dark wash in the navbar color */
-/* fills the rest of .page-main, so tall screens don't leave a blank band between the photo and the footer */
 .hero-cover {
     flex: 1 0 auto;
     display: flex;
@@ -443,7 +423,6 @@ a {
     display: block;
 }
 
-/* flat wash, dark enough to keep the muted subtitle readable even over bright snow */
 .hero-cover::after {
     content: "";
     position: absolute;
@@ -451,7 +430,6 @@ a {
     background: rgba(37, 36, 34, 0.9);
 }
 
-/* width is needed because the auto side margins from .section-container would otherwise shrink it to its content */
 .hero-cover-inner {
     flex: 1 0 auto;
     width: 100%;
@@ -459,7 +437,6 @@ a {
     z-index: 1;
     display: flex;
     align-items: center;
-    /* grows with the viewport so wide screens don't crop the photo down to a thin strip */
     min-height: clamp(520px, 32vw, 880px);
     padding-top: 80px;
     padding-bottom: 80px;
@@ -553,7 +530,6 @@ a {
     }
 }
 
-/* buttons */
 .btn {
     display: inline-flex;
     align-items: center;
@@ -580,41 +556,26 @@ a {
     border-bottom: 3px solid #b9762c;
 }
 
-.btn-primary:hover {
-    opacity: 0.9;
-}
-
-.btn-primary:active {
-    border-bottom-width: 1px;
-    transform: translateY(2px);
-}
-
 .btn-dark {
     background: var(--ink);
     color: var(--ink-text);
     border-bottom: 3px solid var(--ink-edge);
 }
 
-.btn-dark:hover {
-    opacity: 0.9;
-}
-
-.btn-dark:active {
-    border-bottom-width: 1px;
-    transform: translateY(2px);
-}
-
-/* stays light in both themes, like the navbar it sits in */
 .btn-light {
     background: #f4f3f0;
     color: #252422;
     border-bottom: 3px solid #c9c5bd;
 }
 
+.btn-primary:hover,
+.btn-dark:hover,
 .btn-light:hover {
     opacity: 0.9;
 }
 
+.btn-primary:active,
+.btn-dark:active,
 .btn-light:active {
     border-bottom-width: 1px;
     transform: translateY(2px);
@@ -625,7 +586,6 @@ a {
     padding: 6px 14px;
 }
 
-/* docs, the dashboard uses the same sidebar layout */
 .docs-layout {
     display: flex;
     align-items: flex-start;
@@ -652,7 +612,6 @@ a {
     text-decoration: none;
 }
 
-/* a plain border change, the home page's search is a link so it skips the usual outline */
 .docs-search:focus-within {
     border-color: var(--text-subtle);
 }
@@ -719,14 +678,13 @@ a {
     border-radius: 6px;
 }
 
-.docs-list-item:hover {
+.docs-list-item:hover,
+.docs-list-item.is-active {
     color: var(--text);
     background: var(--surface);
 }
 
 .docs-list-item.is-active {
-    color: var(--text);
-    background: var(--surface);
     font-weight: 600;
 }
 
@@ -735,7 +693,9 @@ a {
     background: var(--surface-strong);
 }
 
-.docs-list-item mark {
+.docs-list-item mark,
+.dashboard-card-name mark,
+.dashboard-module-description mark {
     background: var(--mark-bg);
     color: inherit;
     border-radius: 2px;
@@ -906,7 +866,6 @@ a {
     background: var(--surface);
 }
 
-/* status page */
 .status-section {
     padding-top: 40px;
     padding-bottom: 64px;
@@ -942,12 +901,10 @@ a {
     background: var(--raised);
 }
 
-/* no chart to sit on, so no lip */
 .status-card.is-plain {
     border-bottom: 1px solid var(--border);
 }
 
-/* three cards wide */
 .status-grid.is-thirds {
     max-width: 752px;
 }
@@ -1105,15 +1062,6 @@ a {
     font-size: 14px;
 }
 
-/* dashboard */
-
-/* full width, so the page doesn't resize when search hides cards */
-.dashboard-section {
-    width: 100%;
-    padding-top: 40px;
-    padding-bottom: 64px;
-}
-
 .dashboard-header {
     display: flex;
     align-items: center;
@@ -1215,7 +1163,6 @@ a {
     gap: 16px;
 }
 
-/* same box as .status-card, without the lip that doubles as the chart's baseline */
 .dashboard-card {
     display: flex;
     flex-direction: column;
@@ -1326,14 +1273,6 @@ a {
     display: none;
 }
 
-.dashboard-card-name mark,
-.dashboard-module-description mark {
-    background: var(--mark-bg);
-    color: inherit;
-    border-radius: 2px;
-}
-
-/* the switch and config button sit together at the bottom of the card */
 .dashboard-module-actions {
     display: flex;
     align-items: stretch;
@@ -1345,7 +1284,6 @@ a {
     display: flex;
 }
 
-/* dashboard settings */
 .dashboard-form {
     display: flex;
     flex-direction: column;
@@ -1444,7 +1382,6 @@ textarea.dashboard-input {
     gap: 8px;
 }
 
-/* square like the tooltip's key */
 .dashboard-swatch {
     flex: 0 0 auto;
     width: 20px;
@@ -1484,7 +1421,6 @@ textarea.dashboard-input {
     gap: 12px;
 }
 
-/* server stats */
 .dashboard-range {
     display: inline-flex;
     border-radius: 8px;
@@ -1508,14 +1444,12 @@ textarea.dashboard-input {
     color: var(--text);
 }
 
-/* the picked range is filled like .btn-dark */
 .dashboard-range-option.is-selected {
     background: var(--ink);
     color: var(--ink-text);
     border-bottom-color: var(--ink-edge);
 }
 
-/* four equal cards in a row, two on smaller screens, one on phones */
 .stats-metrics {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1530,9 +1464,19 @@ textarea.dashboard-input {
     gap: 2px;
 }
 
+.stats-charts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
 @media (max-width: 1100px) {
     .stats-metrics {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .stats-charts {
+        grid-template-columns: minmax(0, 1fr);
     }
 }
 
@@ -1542,24 +1486,10 @@ textarea.dashboard-input {
     }
 }
 
-/* the two charts sit side by side, and stack where there isn't room */
-.stats-charts {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
-}
-
-@media (max-width: 1100px) {
-    .stats-charts {
-        grid-template-columns: minmax(0, 1fr);
-    }
-}
-
 .stats-chart-block {
     min-width: 0;
 }
 
-/* a wide status card, its lip is still the chart's baseline */
 .status-card.stats-chart-card {
     width: 100%;
     max-width: none;
@@ -1594,9 +1524,6 @@ textarea.dashboard-input {
     color: var(--text-subtle);
 }
 
-/* module switches */
-
-/* two joined buttons. the selected half uses a banner color, green for on and red for off */
 .dashboard-switch {
     display: inline-flex;
     flex: 0 0 auto;
@@ -1666,7 +1593,6 @@ textarea.dashboard-input {
     color: var(--text-muted);
 }
 
-/* smaller screens */
 @media (max-width: 1100px) {
     .docs-toc {
         display: none;
@@ -1830,7 +1756,6 @@ textarea.dashboard-input {
         font-size: 13px;
     }
 
-    /* just the avatar, to leave room for the other buttons */
     .user-chip-name {
         display: none;
     }
@@ -1841,7 +1766,6 @@ textarea.dashboard-input {
         height: 22px;
     }
 
-    /* github is still in the footer, this makes room for both buttons */
     .navbar-github {
         display: none;
     }
