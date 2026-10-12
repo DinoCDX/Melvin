@@ -8,7 +8,6 @@ from globals import ERROR_MESSAGE, MELVIN_MISC_EMOJI
 
 from .views import ErrorUI, SmallSeparator
 
-# called after a setting changes, for modules that need to act on it straight away
 OnChange = Callable[[discord.Guild], Awaitable[None]]
 
 CHANNEL_TYPES = {
@@ -21,24 +20,25 @@ def _display(setting: module_config.Setting, value: str | None) -> str:
     if value is None:
         return "Not set"
 
-    is_default = value == setting.default
-    if setting.kind == "channel":
-        shown = f"<#{value}>"
-    elif setting.kind == "channels":
-        shown = ", ".join(f"<#{part}>" for part in value.split(","))
-    elif setting.kind == "role":
-        shown = f"<@&{value}>"
-    elif setting.kind == "choice":
-        shown = module_config.choice_label(setting, value) or value
-    elif setting.kind == "color":
-        shown = " and ".join(f"#{part}" for part in value.split("-"))
-    elif setting.kind == "image":
-        shown = "an image"
-    else:
-        text = value if len(value) <= 200 else value[:197] + "..."
-        shown = discord.utils.escape_markdown(text)
+    match setting.kind:
+        case "channel":
+            shown = f"<#{value}>"
+        case "channels":
+            shown = ", ".join(f"<#{part}>" for part in value.split(","))
+        case "role":
+            shown = f"<@&{value}>"
+        case "choice":
+            shown = module_config.choice_label(setting, value) or value
+        case "color":
+            shown = " and ".join(f"#{part}" for part in value.split("-"))
+        case "image":
+            shown = "an image"
+        case _:
+            text = value if len(value) <= 200 else value[:197] + "..."
+            shown = discord.utils.escape_markdown(text)
 
-    return f"Set to {shown}" + (" (default)" if is_default else "")
+    default = " (default)" if value == setting.default else ""
+    return f"Set to {shown}{default}"
 
 
 async def _reply_error(interaction: discord.Interaction, message: str) -> None:
@@ -50,8 +50,6 @@ async def _reply_error(interaction: discord.Interaction, message: str) -> None:
 
 
 class ConfigView(discord.ui.LayoutView):
-    # the settings card for one module, rebuilt after every change
-
     def __init__(
         self,
         module: str,
@@ -99,46 +97,47 @@ class ConfigView(discord.ui.LayoutView):
         setting: module_config.Setting,
         value: str | None,
     ) -> discord.ui.Item:
-        if setting.kind in {"channel", "channels"}:
-            several = setting.kind == "channels"
-            select = discord.ui.ChannelSelect(
-                placeholder="Pick channels..." if several else "Pick a channel...",
-                channel_types=CHANNEL_TYPES[setting.channel_type],
-                min_values=0,
-                max_values=module_config.MAX_CHANNELS if several else 1,
-                default_values=[
-                    discord.Object(int(part))
-                    for part in (value or "").split(",")
-                    if part
-                ],
-            )
-        elif setting.kind == "role":
-            select = discord.ui.RoleSelect(
-                placeholder="Pick a role...",
-                min_values=0,
-                max_values=1,
-                default_values=[discord.Object(int(value))] if value else [],
-            )
-        elif setting.kind == "choice":
-            select = discord.ui.Select(
-                options=[
-                    discord.SelectOption(label=label, value=key, default=key == value)
-                    for key, label in setting.choices
-                ],
-            )
-        else:
-            button = discord.ui.Button(
-                label="Edit",
-                style=discord.ButtonStyle.secondary,
-            )
-
-            async def _open_modal(interaction: discord.Interaction) -> None:
-                await interaction.response.send_modal(
-                    SettingModal(self, setting, value),
+        match setting.kind:
+            case "channel" | "channels":
+                several = setting.kind == "channels"
+                select = discord.ui.ChannelSelect(
+                    placeholder="Pick channels..." if several else "Pick a channel...",
+                    channel_types=CHANNEL_TYPES[setting.channel_type],
+                    min_values=0,
+                    max_values=module_config.MAX_CHANNELS if several else 1,
+                    default_values=[
+                        discord.Object(int(part))
+                        for part in (value or "").split(",")
+                        if part
+                    ],
+                )
+            case "role":
+                select = discord.ui.RoleSelect(
+                    placeholder="Pick a role...",
+                    min_values=0,
+                    max_values=1,
+                    default_values=[discord.Object(int(value))] if value else [],
+                )
+            case "choice":
+                select = discord.ui.Select(
+                    options=[
+                        discord.SelectOption(label=label, value=key, default=key == value)
+                        for key, label in setting.choices
+                    ],
+                )
+            case _:
+                button = discord.ui.Button(
+                    label="Edit",
+                    style=discord.ButtonStyle.secondary,
                 )
 
-            button.callback = _open_modal
-            return button
+                async def _open_modal(interaction: discord.Interaction) -> None:
+                    await interaction.response.send_modal(
+                        SettingModal(self, setting, value),
+                    )
+
+                button.callback = _open_modal
+                return button
 
         async def _picked(interaction: discord.Interaction) -> None:
             raw = ",".join(
@@ -178,7 +177,6 @@ class ConfigView(discord.ui.LayoutView):
         setting: module_config.Setting,
     ) -> None:
         user = interaction.user
-        role = self.guild.get_role(role_id)
         if setting.permission and not getattr(
             user.guild_permissions,
             setting.permission,
@@ -186,16 +184,17 @@ class ConfigView(discord.ui.LayoutView):
         ):
             needed = setting.permission.replace("_", " ").title()
             msg = f"You need {needed} to change this."
-            raise module_config.ConfigError(msg)
-        if role is None or role.is_default() or role.managed:
-            msg = "That role can't be given out by Melvin."
-            raise module_config.ConfigError(msg)
-        if role >= self.guild.me.top_role:
-            msg = "That role is equal to or above Melvin's top role."
-            raise module_config.ConfigError(msg)
-        if user.id != self.guild.owner_id and role >= user.top_role:
-            msg = "That role is equal to or above your top role."
-            raise module_config.ConfigError(msg)
+        else:
+            role = self.guild.get_role(role_id)
+            if role is None or role.is_default() or role.managed:
+                msg = "That role can't be given out by Melvin."
+            elif role >= self.guild.me.top_role:
+                msg = "That role is equal to or above Melvin's top role."
+            elif user.id != self.guild.owner_id and role >= user.top_role:
+                msg = "That role is equal to or above your top role."
+            else:
+                return
+        raise module_config.ConfigError(msg)
 
     async def refresh(self, interaction: discord.Interaction) -> None:
         applied = True
@@ -206,9 +205,8 @@ class ConfigView(discord.ui.LayoutView):
                 applied = False
 
         values = await module_config.get_all(self.guild.id, self.module)
-        view = ConfigView(self.module, self.guild, values, self.on_change)
         await interaction.response.edit_message(
-            view=view,
+            view=ConfigView(self.module, self.guild, values, self.on_change),
             allowed_mentions=discord.AllowedMentions.none(),
         )
         if not applied:
@@ -219,8 +217,6 @@ class ConfigView(discord.ui.LayoutView):
 
 
 class SettingModal(discord.ui.Modal):
-    # edits a text, link, color, or image setting
-
     def __init__(
         self,
         view: ConfigView,
@@ -259,7 +255,9 @@ class SettingModal(discord.ui.Modal):
             ),
             default=value if self.has_value else None,
             placeholder=setting.placeholder or None,
-            max_length=512 if setting.kind == "url" else setting.max_length,
+            max_length=module_config.MAX_URL_LENGTH
+            if setting.kind == "url"
+            else setting.max_length,
             required=False,
         )
         self.add_item(
@@ -275,28 +273,23 @@ class SettingModal(discord.ui.Modal):
             await self.config_view.save(interaction, self.setting, str(self.text.value))
             return
 
-        guild_id, module, key = (
-            self.config_view.guild.id,
-            self.config_view.module,
-            self.setting.key,
-        )
-        if (
-            self.upload.values
-            and self.upload.values[0].size > module_config.MAX_IMAGE_BYTES
-        ):
+        guild_id = self.config_view.guild.id
+        module = self.config_view.module
+        key = self.setting.key
+        attachment = self.upload.values[0] if self.upload.values else None
+
+        if attachment and attachment.size > module_config.MAX_IMAGE_BYTES:
             await _reply_error(interaction, "Images must be 8 MB or smaller.")
             return
 
         try:
-            if self.upload.values:
-                attachment = self.upload.values[0]
-                data = await attachment.read()
+            if attachment:
                 await module_config.replace_image(
                     guild_id,
                     module,
                     key,
                     attachment.filename,
-                    data,
+                    await attachment.read(),
                 )
             elif self.remove.value:
                 await module_config.remove_image(guild_id, module, key)
@@ -319,7 +312,6 @@ async def open_config(
     *,
     on_change: OnChange | None = None,
 ) -> None:
-    # every /<module> config command replies through here
     if interaction.guild is None:
         await _reply_error(interaction, "This command can only be used in a server.")
         return
