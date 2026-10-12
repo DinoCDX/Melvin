@@ -13,6 +13,7 @@ from pathlib import Path
 import markdown
 from dotenv import load_dotenv
 from flask import Flask, Response, abort, render_template
+from werkzeug.exceptions import HTTPException
 
 import dashboard
 import http_client
@@ -320,9 +321,33 @@ def terms() -> str:
     return legal_page("terms", "terms")
 
 
-@app.errorhandler(404)
-def not_found(_error: Exception) -> tuple[str, int]:
-    return render_template("404.html", active=None), 404
+ERROR_MESSAGES = {
+    400: "Invalid request body, try again?",
+    401: "This page requires you to be logged in",
+    403: "Nope, you don't have permission to view this page",
+    404: "Page doesn't exist, or was removed",
+    405: "Invalid request",
+    413: "Too big of an upload",
+    429: "Too many requests",
+    500: "Melvin is dead",
+    502: "Discord is dead",
+    503: "Melvin is dead",
+}
+
+
+def error_page(error: HTTPException) -> tuple[str, int]:
+    code = error.code or 500
+    page = render_template(
+        "error.html",
+        active=None,
+        code=code,
+        message=ERROR_MESSAGES[code],
+    )
+    return page, code
+
+
+for _code in ERROR_MESSAGES:
+    app.register_error_handler(_code, error_page)
 
 
 if __name__ == "__main__":

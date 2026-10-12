@@ -3,11 +3,8 @@
 {% block content %}
 <section class="hero section-container">
     <div class="hero-text">
-        <h1 class="hero-title">404</h1>
-        <p class="hero-subtitle">
-            That page doesn't exist. It might have moved, or the link is
-            wrong.
-        </p>
+        <h1 class="hero-title">{{ code }}</h1>
+        <p class="hero-subtitle">{{ message }}</p>
         <div class="hero-cta">
             <a href="{{ links.add }}" class="btn btn-primary">Add Melvin</a>
             <a href="{{ links.github }}" class="btn btn-dark">
