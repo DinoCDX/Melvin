@@ -18,7 +18,7 @@ Rows older than 31 days are deleted once an hour, so the longest range always ha
 
 ## Dashboard page
 The Server Stats page is in the sidebar of a server's dashboard. It has four cards at the top, for total messages, total voice minutes, member count, and net growth, and two charts below them.
-The first chart stacks messages and voice minutes, so the height of each point is the two added together. The second chart shows the member count. Hovering over or tapping a point shows how long ago it was and its totals, and the charts can also be focused with Tab and stepped through with the left and right arrow keys.
+The first chart layers messages over voice minutes, like the status page's latency charts, so each series is drawn from the bottom of the chart and its height is its own total. The second chart shows the member count. Hovering over or tapping a point shows how long ago it was and its totals, and the charts can also be focused with Tab and stepped through with the left and right arrow keys.
 The time range can be switched between 24 hours, 7 days, and 30 days.
 When the module is turned off, the page shows a red banner saying nothing new is being counted, along with the totals saved before then.
 

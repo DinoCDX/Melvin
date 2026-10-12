@@ -208,10 +208,10 @@ Read settings wherever the cog needs them. Values come back as text, or None whe
 ```python
 if message.guild is not None:
     settings = await module_config.get_all(message.guild.id, "thanks")
-    cooldown = float(settings["cooldown"] or rate_time)
+    cooldown = float(settings["cooldown"] or DEFAULT_COOLDOWN)
     announce = settings["announce"] != "off"
 else:
-    cooldown, announce = rate_time, True
+    cooldown, announce = DEFAULT_COOLDOWN, True
 ```
 
 Use `module_config.get(guild_id, module, key)` to read a single setting, like the audit cog does for its log channel.
@@ -325,7 +325,7 @@ member_ys = charts.scale(members, min(members), max(members), height)
 points = charts.area_points(member_ys, width, height)
 ```
 
-For a stacked chart, draw the bottom series with `area_points`, and the series above it with `band_points`, which fills the space between the two lines. The messages and voice minutes chart is drawn this way.
+For a chart with two series, scale both with the same range and draw each with `area_points`, so they're layered over each other rather than stacked. Put the `series-2` polygon first in the SVG, so the `series-1` polygon sits on top of it. The status page's gateway and API chart and the messages and voice minutes chart are both drawn this way. For the tooltip heights, pass whichever series is taller at each point, so the tooltip sits on the top edge.
 
 **Tooltips**
 `charts.tooltip_points` builds each point's tooltip, from a label for when it was, the height it sits at, and its values. Each series is a label, its values, a unit, and a key, where `series-1` is the main orange and `series-2` the lighter one.
