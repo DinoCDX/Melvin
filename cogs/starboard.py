@@ -2,9 +2,9 @@ import asyncio
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import aiosqlite
 import discord
@@ -16,6 +16,9 @@ import module_settings
 from globals import DATA_DIR, ERROR_MESSAGE, PRIMARY
 from module_registry import Module, Setting
 from ui import ErrorUI, GalleryWithItem, SmallSeparator, open_config
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 MODULE = Module(
     "starboard",
@@ -116,7 +119,9 @@ def _watches(settings: dict[str, str | None], emoji: str) -> bool:
 def _in_sources(channel: SourceChannel, sources: str | None) -> bool:
     if not sources:
         return True
-    channel_id = channel.parent_id if isinstance(channel, discord.Thread) else channel.id
+    channel_id = (
+        channel.parent_id if isinstance(channel, discord.Thread) else channel.id
+    )
     return str(channel_id) in sources.split(",")
 
 
@@ -433,7 +438,11 @@ class StarboardCog(
         except discord.NotFound:
             return False
         except discord.HTTPException:
-            log.warning("Couldn't update starboard post %s in guild %s", post_id, guild.id)
+            log.warning(
+                "Couldn't update starboard post %s in guild %s",
+                post_id,
+                guild.id,
+            )
         return True
 
     async def _delete_post(
@@ -452,7 +461,11 @@ class StarboardCog(
         except discord.NotFound:
             pass
         except discord.HTTPException:
-            log.warning("Couldn't delete starboard post %s in guild %s", post_id, guild.id)
+            log.warning(
+                "Couldn't delete starboard post %s in guild %s",
+                post_id,
+                guild.id,
+            )
 
     async def _refresh(
         self,
