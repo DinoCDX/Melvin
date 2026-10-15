@@ -2,6 +2,7 @@ import asyncio
 import re
 import secrets
 import time
+import unicodedata
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -20,9 +21,11 @@ IMAGE_DIR = DATA_DIR / "config_images"
 IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_URL_LENGTH = 512
+MAX_EMOJIS = 10
 
 COLOR_PATTERN = re.compile(r"^#?([0-9a-fA-F]{6})(?:\s*-\s*#?([0-9a-fA-F]{6}))?$")
 SNOWFLAKE_PATTERN = re.compile(r"^\d{15,21}$")
+CUSTOM_EMOJI_PATTERN = re.compile(r"^<a?:\w{2,32}:\d{15,21}>$")
 
 _UPSERT = """
     INSERT INTO guild_settings (guild_id, module, key, value, updated_at)
@@ -56,6 +59,13 @@ def choice_label(setting: Setting, value: str | None) -> str | None:
     return dict(setting.choices).get(value) if value else None
 
 
+def _is_unicode_emoji(token: str) -> bool:
+    if len(token) > 32:
+        return False
+    categories = {unicodedata.category(char) for char in token}
+    return "So" in categories and categories <= {"So", "Sk", "Mn", "Cf"}
+
+
 def _fail(msg: str) -> NoReturn:
     raise ConfigError(msg)
 
@@ -81,6 +91,27 @@ def clean_value(setting: Setting, raw: str | None) -> str | None:
         case "choice":
             if not any(value == key for key, _ in setting.choices):
                 _fail(f"That isn't one of the options for {setting.label}.")
+        case "emojis":
+            tokens = list(
+                dict.fromkeys(part for part in re.split(r"[\s,]+", value) if part),
+            )
+            if len(tokens) > MAX_EMOJIS:
+                _fail(f"{setting.label} can have at most {MAX_EMOJIS} emojis.")
+            for token in tokens:
+                if CUSTOM_EMOJI_PATTERN.match(token):
+                    continue
+                if not _is_unicode_emoji(token):
+                    _fail(f"{token} isn't an emoji Melvin can use.")
+            return ",".join(tokens)
+        case "number":
+            if not value.isdigit():
+                _fail(f"{setting.label} has to be a whole number.")
+            number = int(value)
+            if not setting.minimum <= number <= setting.maximum:
+                _fail(
+                    f"{setting.label} has to be between {setting.minimum} and {setting.maximum}.",
+                )
+            return str(number)
         case "text":
             if len(value) > setting.max_length:
                 _fail(
