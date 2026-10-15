@@ -4,7 +4,12 @@ import discord
 
 import module_config
 import module_settings
-from globals import ERROR_MESSAGE, MELVIN_MISC_EMOJI
+from globals import (
+    ERROR_MESSAGE,
+    MELVIN_CHECK_EMOJI,
+    MELVIN_CROSS_EMOJI,
+    MELVIN_MISC_EMOJI,
+)
 
 from .views import ErrorUI, SmallSeparator
 
@@ -14,6 +19,13 @@ CHANNEL_TYPES = {
     "text": [discord.ChannelType.text],
     "any": [discord.ChannelType.text, discord.ChannelType.news],
 }
+
+
+def _is_toggle(setting: module_config.Setting) -> bool:
+    return setting.kind == "choice" and {key for key, _ in setting.choices} == {
+        "on",
+        "off",
+    }
 
 
 def _display(setting: module_config.Setting, value: str | None) -> str:
@@ -72,6 +84,14 @@ class ConfigView(discord.ui.LayoutView):
 
         for setting in module_config.CONFIG[module]:
             value = values[setting.key]
+            if _is_toggle(setting):
+                container.add_item(
+                    discord.ui.Section(
+                        f"**{setting.label}**\n-# {setting.description}",
+                        accessory=self._toggle(setting, value),
+                    ),
+                )
+                continue
             text = (
                 f"**{setting.label}**\n-# {setting.description}\n"
                 f"{_display(setting, value)}"
@@ -91,6 +111,24 @@ class ConfigView(discord.ui.LayoutView):
             return True
         await _reply_error(interaction, "You do not have permission to do this.")
         return False
+
+    def _toggle(
+        self,
+        setting: module_config.Setting,
+        value: str | None,
+    ) -> discord.ui.Button:
+        enabled = (value or setting.default) == "on"
+        button = discord.ui.Button(
+            label="On" if enabled else "Off",
+            emoji=MELVIN_CHECK_EMOJI if enabled else MELVIN_CROSS_EMOJI,
+            style=discord.ButtonStyle.secondary,
+        )
+
+        async def _flip(interaction: discord.Interaction) -> None:
+            await self.save(interaction, setting, "off" if enabled else "on")
+
+        button.callback = _flip
+        return button
 
     def _control(
         self,
