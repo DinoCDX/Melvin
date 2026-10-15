@@ -1,5 +1,5 @@
 # Modules Documentation
-Turn Melvin's features on or off for a guild, with `/modules` in Discord or from the dashboard on the website. Every module is on by default.
+Turn Melvin's features on or off for a guild, with `/modules` in Discord or from the dashboard on the website. Most modules are on by default. Modules that are off by default say so on their page.
 
 ## Storage
 Module settings are stored in a SQLite database at `data/modules.db`, in a table called `guild_modules`. Each row holds a guild id, a module name, and whether it's enabled. A guild only has rows for modules it has changed. The table is created automatically when the bot starts, if it does not already exist.
@@ -34,6 +34,7 @@ If the command user lacks Manage Server, or the command is used outside a guild,
 | Timezones | The `/timezone` commands. |
 | Info | The `/info` commands. |
 | Style | The `/style` commands, and applying Melvin's default style when it joins. |
+| Starboard | The `/starboard` commands, and posting starred messages. Off by default. |
 | Server Stats | Counting messages, voice minutes, and members for the dashboard's Server Stats page. |
 
 `/help`, `/latency`, `/melvin`, `/stats`, and `/modules` itself can't be turned off.
