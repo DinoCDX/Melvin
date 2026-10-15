@@ -3,7 +3,7 @@ import time
 import aiosqlite
 
 from globals import DATA_DIR
-from module_registry import MODULES
+from module_registry import MODULES, modules
 
 DB_PATH = DATA_DIR / "modules.db"
 CACHE_SECONDS = 10
@@ -43,11 +43,17 @@ async def disabled_modules(guild_id: int) -> set[str]:
     async with (
         aiosqlite.connect(DB_PATH) as db,
         db.execute(
-            "SELECT module FROM guild_modules WHERE guild_id = ? AND enabled = 0",
+            "SELECT module, enabled FROM guild_modules WHERE guild_id = ?",
             (guild_id,),
         ) as cursor,
     ):
-        disabled = {row[0] async for row in cursor}
+        stored = {row[0]: bool(row[1]) async for row in cursor}
+
+    disabled = {
+        key
+        for key, module in modules().items()
+        if not stored.get(key, module.enabled_by_default)
+    }
 
     _cache[guild_id] = (now, disabled)
     return disabled

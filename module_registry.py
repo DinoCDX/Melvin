@@ -23,6 +23,8 @@ class Setting:
     placeholder: str = ""
     permission: str | None = None
     channel_type: str = "text"
+    minimum: int = 0
+    maximum: int = 0
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class Module:
     label: str
     description: str
     settings: tuple[Setting, ...] = ()
+    enabled_by_default: bool = True
 
 
 def cog_names() -> list[str]:
