@@ -152,7 +152,7 @@ class ModulesView(Paginator):
         self.update_data(TITLE, self._sections(disabled), keep_page=not reorder)
 
     @classmethod
-    async def build(cls, guild_id: int) -> "ModulesView":
+    async def build(cls, guild_id: int) -> ModulesView:
         return cls(guild_id, await module_settings.disabled_modules(guild_id))
 
 
