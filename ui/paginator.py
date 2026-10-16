@@ -1,4 +1,6 @@
 # ruff: file-ignore[private-member-access]
+from __future__ import annotations
+
 # pyright: reportPrivateUsage = false
 import contextlib
 from collections.abc import Sequence
@@ -193,8 +195,18 @@ class Paginator(discord.ui.LayoutView):
         self._title_button = button
         self._render()
 
-    def update_data(self, title: str, data: _ItemsOrStrList) -> None:
+    def update_data(
+        self,
+        title: str,
+        data: _ItemsOrStrList,
+        *,
+        keep_page: bool = False,
+    ) -> None:
+        page = self.current_page
         self._set_data(title, data)
+        if keep_page:
+            self.current_page = min(page, len(self.pages) - 1)
+            self._render()
 
     def _page_items(self) -> _ItemsList:
         page = self.pages[self.current_page]
