@@ -15,8 +15,9 @@ None.
 Requires Manage Server. Guild only.
 
 **Behavior**
-The command replies with a list of modules, each with its name, a short description, and a button showing whether it's on or off.
-Pressing a button turns that module on or off for the guild, and the list updates in place. Only members with Manage Server can press the buttons. The buttons stop responding after 5 minutes, and running the command again shows a new list.
+The command replies with a list of modules, each with its name, a short description, and a button showing whether it's on or off. The list shows eight modules per page. Modules that are on come first, followed by modules that are off.
+A dropdown at the top filters the list to all modules, only enabled modules, or only disabled modules. Changing the filter reorders the list. Pressing a module's button turns it on or off for the guild and updates the list in place, without moving any modules, so the module you pressed stays where it was. The page controls under the list move between pages, and the page number button jumps to a page you type in.
+Only members with Manage Server can press the module buttons. The dropdown and page buttons work for anyone who can see the message. The buttons stop responding after 5 minutes, and running the command again shows a new list.
 
 **Error handling**
 If the command user lacks Manage Server, or the command is used outside a guild, the command replies with an ephemeral error message.

@@ -15,7 +15,7 @@ import module_config
 import module_settings
 from globals import DATA_DIR, ERROR_MESSAGE, PRIMARY
 from module_registry import Module, Setting
-from ui import ErrorUI, GalleryWithItem, SmallSeparator, open_config
+from ui import ErrorUI, SmallSeparator, open_config
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -89,11 +89,16 @@ DEFAULT_EMOJI = "⭐"
 NO_CONTENT = "[No content, likely an embed or attachment.]"
 MAX_CONTENT_LENGTH = 1000
 VOTE_CACHE_SIZE = 500
+MAX_GALLERY_ITEMS = 10
+MAX_FILE_LINKS = 10
 VOTE_CACHE_SECONDS = 600
 STARBOARD_COLOR = discord.Color.from_str(PRIMARY)
 NO_PINGS = discord.AllowedMentions.none()
 
 SourceChannel = discord.TextChannel | discord.Thread | discord.VoiceChannel
+
+type Voters = dict[int, set[int]]
+type Votes = dict[str, Voters]
 
 
 class _Lock:
@@ -103,9 +108,9 @@ class _Lock:
 
 
 @dataclass
-class _Votes:
+class _CachedVotes:
     stamp: float
-    users: dict[str, dict[int, set[int]]] = field(default_factory=dict)
+    users: Votes = field(default_factory=dict)
 
 
 def _emoji_list(value: str | None) -> list[str]:
@@ -134,14 +139,47 @@ def _truncate(text: str, length: int = MAX_CONTENT_LENGTH) -> str:
     return text[: length - 3] + "..." if len(text) > length else text
 
 
-def _image_url(message: discord.Message) -> str | None:
-    for attachment in message.attachments:
-        if attachment.content_type and attachment.content_type.startswith("image/"):
-            return attachment.url
-    for embed in message.embeds:
-        if embed.image and embed.image.url:
-            return embed.image.url
-    return None
+def _is_image(attachment: discord.Attachment) -> bool:
+    content_type = attachment.content_type or ""
+    return content_type.startswith("image/")
+
+
+def _split_media(
+    message: discord.Message,
+) -> tuple[list[str], list[discord.Attachment]]:
+    images = [attachment for attachment in message.attachments if _is_image(attachment)]
+    files = [
+        attachment for attachment in message.attachments if not _is_image(attachment)
+    ]
+    gallery = [attachment.url for attachment in images[:MAX_GALLERY_ITEMS]]
+    files.extend(images[MAX_GALLERY_ITEMS:])
+    if not gallery and not files:
+        embed_image = next(
+            (
+                embed.image.url
+                for embed in message.embeds
+                if embed.image and embed.image.url
+            ),
+            None,
+        )
+        if embed_image:
+            gallery.append(embed_image)
+    return gallery, files
+
+
+def _link_text(name: str) -> str:
+    return name.replace("[", "(").replace("]", ")")
+
+
+def _file_lines(files: list[discord.Attachment]) -> str:
+    lines = [
+        f"📎 [{_link_text(attachment.filename)}]({attachment.url})"
+        for attachment in files[:MAX_FILE_LINKS]
+    ]
+    hidden = len(files) - MAX_FILE_LINKS
+    if hidden > 0:
+        lines.append(f"-# and {hidden} more")
+    return "\n".join(lines)
 
 
 def _build_view(
@@ -149,23 +187,35 @@ def _build_view(
     emoji: str,
     count: int,
 ) -> discord.ui.LayoutView:
-    body = _truncate(message.content.strip()) or NO_CONTENT
+    body = _truncate(message.content.strip())
+    gallery, files = _split_media(message)
+    jump = discord.ui.Button(
+        label="Jump to Message",
+        style=discord.ButtonStyle.link,
+        url=message.jump_url,
+    )
+    media_only = not body and bool(gallery or files)
     items: list[discord.ui.Item] = [
         discord.ui.TextDisplay(
-            f"**{emoji} {count}** | {message.channel.mention} by {message.author.mention}",
+            f"**{emoji} {count}** | {message.channel.mention} "
+            f"by {message.author.mention}",
         ),
         SmallSeparator(),
-        discord.ui.Section(
-            body,
-            accessory=discord.ui.Button(
-                label="Jump to Message",
-                style=discord.ButtonStyle.link,
-                url=message.jump_url,
-            ),
-        ),
     ]
-    if image := _image_url(message):
-        items.append(GalleryWithItem(image))
+    if body:
+        items.append(discord.ui.Section(body, accessory=jump))
+    elif not media_only:
+        items.append(discord.ui.Section(NO_CONTENT, accessory=jump))
+    if gallery:
+        items.append(
+            discord.ui.MediaGallery(
+                *(discord.MediaGalleryItem(url) for url in gallery),
+            ),
+        )
+    if files:
+        items.append(discord.ui.TextDisplay(_file_lines(files)))
+    if media_only:
+        items.append(discord.ui.ActionRow(jump))
 
     view = discord.ui.LayoutView()
     view.add_item(discord.ui.Container(*items, accent_color=STARBOARD_COLOR))
@@ -184,7 +234,7 @@ class StarboardCog(
         self.bot = bot
         self.db_path = DATA_DIR / "starboard.db"
         self._locks: dict[tuple[int, int], _Lock] = {}
-        self._votes: OrderedDict[int, _Votes] = OrderedDict()
+        self._votes: OrderedDict[int, _CachedVotes] = OrderedDict()
 
     async def cog_load(self) -> None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -343,14 +393,14 @@ class StarboardCog(
         message: discord.Message,
         post_channel: discord.abc.GuildChannel | None,
         post: tuple[int, int] | None,
-    ) -> dict[str, dict[int, set[int]]]:
+    ) -> Votes:
         entry = self._votes.get(message.id)
         if entry is not None and time.monotonic() - entry.stamp < VOTE_CACHE_SECONDS:
             self._votes.move_to_end(message.id)
             return entry.users
 
         post_message = await self._fetch_post(post_channel, post)
-        users: dict[str, dict[int, set[int]]] = {}
+        users: Votes = {}
         for found in (message, post_message):
             if found is None:
                 continue
@@ -360,7 +410,7 @@ class StarboardCog(
                     if not user.bot:
                         reacted.setdefault(user.id, set()).add(found.id)
 
-        self._votes[message.id] = _Votes(time.monotonic(), users)
+        self._votes[message.id] = _CachedVotes(time.monotonic(), users)
         self._votes.move_to_end(message.id)
         while len(self._votes) > VOTE_CACHE_SIZE:
             self._votes.popitem(last=False)
@@ -368,7 +418,7 @@ class StarboardCog(
 
     def _count(
         self,
-        users: dict[str, dict[int, set[int]]],
+        users: Votes,
         settings: dict[str, str | None],
         author_id: int,
     ) -> tuple[int, str]:
@@ -439,9 +489,7 @@ class StarboardCog(
             return False
         except discord.HTTPException:
             log.warning(
-                "Couldn't update starboard post %s in guild %s",
-                post_id,
-                guild.id,
+                "Couldn't update starboard post %s in guild %s", post_id, guild.id
             )
         return True
 
@@ -462,9 +510,7 @@ class StarboardCog(
             pass
         except discord.HTTPException:
             log.warning(
-                "Couldn't delete starboard post %s in guild %s",
-                post_id,
-                guild.id,
+                "Couldn't delete starboard post %s in guild %s", post_id, guild.id
             )
 
     async def _refresh(
@@ -488,9 +534,7 @@ class StarboardCog(
         threshold = int(settings["threshold"])
         post = await self._post_row(guild.id, message.id)
         post_channel = guild.get_channel(post[0]) if post is not None else None
-        blocked = message.channel.id == star_channel.id or (
-            _is_nsfw(source) and not star_channel.is_nsfw()
-        )
+        blocked = _is_nsfw(source) and not star_channel.is_nsfw()
 
         try:
             if blocked:
@@ -593,7 +637,7 @@ class StarboardCog(
         try:
             await message.add_reaction(emoji)
         except discord.HTTPException:
-            log.info(
+            log.warning(
                 "Couldn't add the starboard reaction in channel %s of guild %s",
                 message.channel.id,
                 message.guild.id,

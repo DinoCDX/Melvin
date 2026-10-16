@@ -17,7 +17,7 @@ Bots never count. A message's author only counts their own reaction when Self-st
 
 Reactions are only counted in the source channels, if any are set. Threads count under their parent channel.
 
-When a message reaches the threshold, Melvin posts it to the starboard channel. The post shows the count, the channel, the author, the message text, the first image on the message (or in a linked embed, such as a GIF), and a Jump to Message button. The count updates as reactions change. If the count drops below the threshold, the post is removed.
+When a message reaches the threshold, Melvin posts it to the starboard channel. The post shows the count, the channel, the author, the message text, and a Jump to Message button. Images on the message appear in a gallery, up to 10 of them. Other files are listed as links, and any images beyond the gallery limit are listed there too. If the message has no attachments, Melvin uses the first image from a linked embed, such as a GIF. The count updates as reactions change. If the count drops below the threshold, the post is removed.
 
 Some other things to know:
 
