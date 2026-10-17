@@ -18,7 +18,7 @@ Every file in `cogs/` is loaded when the bot starts, except files whose name sta
 The bot and the website both read and write the same database at `data/modules.db`. The bot caches it and re-reads it every 10 seconds, so a change made on the dashboard reaches the bot within that time.
 
 ## Using the template
-`cogs/_template.py` is a blank module that includes everything below: the `MODULE`, the GroupCog, the server only decorators, the shared error handler, a config command, a listener that checks the module, and cleanup for when Melvin leaves a guild. It isn't loaded, since its name starts with an underscore.
+`cogs/_template.py` is a blank module that includes everything below: the `MODULE`, the GroupCog, the server only decorators, a config command, a listener that checks the module, and cleanup for when Melvin leaves a guild. It isn't loaded, since its name starts with an underscore.
 To start a new module:
 
 1. Copy it to `cogs/<key>.py`, without the underscore.
@@ -200,7 +200,7 @@ async def config(self, interaction: discord.Interaction) -> None:
     await open_config(interaction, "thanks")
 ```
 
-The cog should also have the same `cog_app_command_error` as the other cogs, so a missing permission replies with `You do not have permission to do this.`
+Errors are handled globally in `main.py` (`MelvinTree.on_error`), so the cog doesn't need its own handler. A missing permission replies with `You do not have permission to do this.`, and a missing bot permission names what Melvin needs.
 
 **3. Read the settings**
 Read settings wherever the cog needs them. Values come back as text, or None when a setting has no value and no default, so turn ids and numbers into the right type first. The thanks cog reads both of its settings before crediting a thank.
@@ -349,7 +349,7 @@ In the template, give the chart's element the `status-chart` class and pass the 
 - Nothing at the top level of the file needs the bot, a token, or an API key.
 - Every listener that acts in a guild checks `module_settings.is_enabled`.
 - Its settings are in `MODULE`, with a description and default for each.
-- It has a `config` command that replies through `open_config`, with the Manage Server check and the shared error handler.
+- It has a `config` command that replies through `open_config`, with the Manage Server check.
 - It reads settings with `module_config`, never from its own table.
 - Old settings are moved with `migrate_legacy`, if there were any.
 - Its docs page has a heading for every command, written as its full path, like `## /thanks config`.
