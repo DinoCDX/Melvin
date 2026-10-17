@@ -3,21 +3,28 @@ import contextlib
 import logging
 import random
 import re
+import time
 import urllib.parse
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import aiohttp
+import aiosqlite
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
-from globals import BROWSER, THUMBS_DOWN_WHITE, THUMBS_UP_WHITE, WEBSITE_URL
+import durations
+import module_settings
+from globals import BROWSER, DATA_DIR, THUMBS_DOWN_WHITE, THUMBS_UP_WHITE, WEBSITE_URL
 from module_registry import Module
 from ui import (
     ErrorUI,
     GalleryWithItem,
     GatedUI,
+    InfoUI,
     Paginator,
+    PositiveUI,
     ResponseUI,
     SmallSeparator,
 )
@@ -28,12 +35,19 @@ if TYPE_CHECKING:
 MODULE = Module(
     "tool",
     "Tools",
-    "Encoding, decoding, speak, 8ball, Urban Dictionary, and Wikipedia.",
+    "Encoding, decoding, speak, 8ball, Urban Dictionary, Wikipedia, and reminders.",
 )
 
 log = logging.getLogger(__name__)
 
 NO_MENTIONS = discord.AllowedMentions.none()
+
+REMINDER_CHECK_SECONDS = 15
+REMINDER_MIN_SECONDS = 60
+REMINDER_MAX_SECONDS = 365 * 86400
+REMINDER_LIMIT = 25
+REMINDER_MESSAGE_LENGTH = 300
+REMINDER_PREVIEW_LENGTH = 60
 
 URBAN_API = "https://api.urbandictionary.com/v0/define"
 URBAN_DEFINE = "https://www.urbandictionary.com/define.php?term="
@@ -389,6 +403,10 @@ class WikiView(discord.ui.LayoutView):
                 await self.message.edit(view=self)
 
 
+def _preview(text: str) -> str:
+    return text if len(text) <= REMINDER_PREVIEW_LENGTH else text[: REMINDER_PREVIEW_LENGTH - 3] + "..."
+
+
 class ToolCog(
     commands.GroupCog,
     name="tool",
@@ -398,6 +416,7 @@ class ToolCog(
         super().__init__()
         self.bot = bot
         self.session: aiohttp.ClientSession | None = None
+        self.db_path = DATA_DIR / "reminders.db"
         self.decode_menu = app_commands.ContextMenu(
             name="Decode",
             callback=self.decode_message,
@@ -406,8 +425,27 @@ class ToolCog(
 
     async def cog_load(self) -> None:
         self.session = aiohttp.ClientSession()
+        async with aiosqlite.connect(self.db_path) as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    guild_id INTEGER,
+                    channel_id INTEGER NOT NULL,
+                    message TEXT NOT NULL,
+                    due_at REAL NOT NULL
+                )
+                """,
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS reminders_due ON reminders (due_at)",
+            )
+            await conn.commit()
+        self.check_reminders.start()
 
     async def cog_unload(self) -> None:
+        self.check_reminders.cancel()
         self.bot.tree.remove_command(self.decode_menu.name, type=self.decode_menu.type)
         if self.session is not None:
             await self.session.close()
@@ -645,6 +683,190 @@ class ToolCog(
             view=ResponseUI(f"**{prompt}**\n<:8ball:1548098650482413608>**{answer}**"),
             allowed_mentions=NO_MENTIONS,
         )
+
+    @app_commands.command(name="remind", description="Set a reminder.")
+    @app_commands.describe(
+        duration="How long from now, like 10m, 2h, or 3d.",
+        message="What to remind you about.",
+    )
+    async def remind(
+        self,
+        interaction: discord.Interaction,
+        duration: str,
+        message: app_commands.Range[str, 1, REMINDER_MESSAGE_LENGTH],
+    ) -> None:
+        seconds = durations.parse_duration(duration.strip())
+        if seconds is None or not (
+            REMINDER_MIN_SECONDS <= seconds <= REMINDER_MAX_SECONDS
+        ):
+            await interaction.response.send_message(
+                view=ErrorUI(
+                    "**Use a time from 1 minute to 365 days, like `10m`, `2h`, or `3d`.**",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        due_at = time.time() + seconds
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) FROM reminders WHERE user_id = ?",
+                (interaction.user.id,),
+            ) as cursor:
+                (count,) = await cursor.fetchone()
+            if count >= REMINDER_LIMIT:
+                await interaction.response.send_message(
+                    view=ErrorUI(
+                        f"**You can have up to {REMINDER_LIMIT} reminders at once. "
+                        "Use /tool forget to remove one.**",
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            async with conn.execute(
+                """
+                INSERT INTO reminders (user_id, guild_id, channel_id, message, due_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    interaction.user.id,
+                    interaction.guild_id,
+                    interaction.channel_id,
+                    message,
+                    due_at,
+                ),
+            ) as cursor:
+                reminder_id = cursor.lastrowid
+            await conn.commit()
+
+        due = discord.utils.format_dt(datetime.fromtimestamp(due_at, UTC), style="R")
+        await interaction.response.send_message(
+            view=PositiveUI(
+                title=f"Reminder #{reminder_id} set",
+                subtitle=f"**Due** {due}",
+            ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="reminders", description="List your reminders.")
+    async def reminders(self, interaction: discord.Interaction) -> None:
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                "SELECT id, due_at, message FROM reminders WHERE user_id = ? ORDER BY due_at",
+                (interaction.user.id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        if not rows:
+            await interaction.response.send_message(
+                view=InfoUI(title="Reminders", subtitle="**You have no reminders set.**"),
+                ephemeral=True,
+            )
+            return
+
+        lines = [
+            f"**#{reminder_id}** {discord.utils.format_dt(datetime.fromtimestamp(due_at, UTC), style='R')} | "
+            f"{discord.utils.escape_markdown(_preview(message))}"
+            for reminder_id, due_at, message in rows
+        ]
+        await interaction.response.send_message(
+            view=InfoUI(title="Reminders", subtitle="\n".join(lines)),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="forget", description="Cancel one of your reminders.")
+    @app_commands.describe(reminder_id="The reminder number from /tool reminders.")
+    async def forget(
+        self,
+        interaction: discord.Interaction,
+        reminder_id: app_commands.Range[int, 1],
+    ) -> None:
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                "DELETE FROM reminders WHERE id = ? AND user_id = ?",
+                (reminder_id, interaction.user.id),
+            ) as cursor:
+                deleted = cursor.rowcount
+            await conn.commit()
+
+        if not deleted:
+            await interaction.response.send_message(
+                view=ErrorUI(f"**You have no reminder #{reminder_id}.**"),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            view=PositiveUI(title=f"Reminder #{reminder_id} cancelled", subtitle="**Removed.**"),
+            ephemeral=True,
+        )
+
+    @tasks.loop(seconds=REMINDER_CHECK_SECONDS)
+    async def check_reminders(self) -> None:
+        try:
+            await self._send_due_reminders()
+        except Exception:
+            log.exception("failed to send due reminders")
+
+    @check_reminders.before_loop
+    async def _wait_for_bot(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _send_due_reminders(self) -> None:
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                """
+                SELECT id, user_id, guild_id, channel_id, message
+                FROM reminders
+                WHERE due_at <= ?
+                ORDER BY due_at
+                """,
+                (time.time(),),
+            ) as cursor:
+                due = await cursor.fetchall()
+
+            for reminder_id, user_id, guild_id, channel_id, message in due:
+                if guild_id is not None and not await module_settings.is_enabled(
+                    guild_id,
+                    "tool",
+                ):
+                    continue
+                try:
+                    await self._deliver(channel_id, user_id, message)
+                except discord.HTTPException:
+                    log.exception("failed to deliver reminder %s", reminder_id)
+                    continue
+                await conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+            await conn.commit()
+
+    async def _deliver(self, channel_id: int, user_id: int, message: str) -> None:
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except (discord.NotFound, discord.Forbidden):
+                return
+        if not isinstance(channel, discord.abc.Messageable):
+            return
+
+        view = discord.ui.LayoutView()
+        view.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(f"### Reminder\n<@{user_id}> {message}"),
+            ),
+        )
+        try:
+            await channel.send(
+                view=view,
+                allowed_mentions=discord.AllowedMentions(
+                    everyone=False,
+                    roles=False,
+                    users=True,
+                ),
+            )
+        except discord.Forbidden:
+            return
+
 
 
 async def setup(bot: commands.Bot) -> None:
