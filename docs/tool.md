@@ -149,7 +149,7 @@ If the query matches a disambiguation page, such as `Python`, the command replie
 If Wikipedia cannot be reached or does not respond within ten seconds, the command replies with an ephemeral error message.
 
 ## /tool 8ball
-Ask the magic 8ball a question.
+Ask the magic 8ball a question. Mentions in the prompt are shown but never pinged.
 
 **Parameters**
 

@@ -1,4 +1,5 @@
 import logging
+import random
 
 import discord
 from discord import app_commands
@@ -24,13 +25,22 @@ MODULE = Module(
         Setting(
             "message",
             "Message",
-            "Use {member} to mention the new member and {member_count} for the member count.",
+            "Use {member} to mention the new member and {member_count} for the member count. "
+            "Separate several messages with $ and one is picked at random for each join.",
             "text",
             default="Welcome, {member}!",
             max_length=2000,
             placeholder="Welcome, {member}! We're at {member_count} members now.",
         ),
         Setting("image", "Image", "Shown under the message.", "image"),
+        Setting(
+            "bots",
+            "Bot welcomes",
+            "Whether bots get the welcome message too.",
+            "choice",
+            default="off",
+            choices=(("off", "Skip bots"), ("on", "Welcome bots")),
+        ),
         Setting(
             "button1_label",
             "First button label",
@@ -67,6 +77,11 @@ MODULE = Module(
 log = logging.getLogger(__name__)
 
 
+def split_messages(text: str) -> list[str]:
+    parts = [part.strip() for part in text.split("$")]
+    return [part for part in parts if part] or [text.strip()]
+
+
 async def safe_finish(
     interaction: discord.Interaction,
     view: discord.ui.LayoutView,
@@ -99,7 +114,8 @@ def _build_welcome_ui(
     values: dict[str, str | None],
     target_member: discord.Member | discord.User,
 ) -> tuple[ResponseUI, discord.File | None]:
-    text = (values["message"] or "").replace("{member}", target_member.mention)
+    message = random.choice(split_messages(values["message"] or ""))
+    text = message.replace("{member}", target_member.mention)
     guild = getattr(target_member, "guild", None)
     if guild is not None:
         text = text.replace("{member_count}", str(guild.member_count))
@@ -209,6 +225,8 @@ class WelcomeCog(
             return
 
         values = await module_config.get_all(member.guild.id, "welcome")
+        if member.bot and values["bots"] != "on":
+            return
         channel_id = values["channel"]
         channel = self.bot.get_channel(int(channel_id)) if channel_id else None
         if not isinstance(channel, discord.TextChannel):
