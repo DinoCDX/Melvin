@@ -125,6 +125,17 @@ class Melvin(commands.Bot):
             ),
         )
 
+    async def get_bio(self, *, guild: discord.Guild) -> None:
+        result = await self.http.request(
+            route=discord.http.Route(
+                "PATCH",
+                "/guilds/{guild_id}/members/@me",
+                guild_id=guild.id,
+            ),
+            json={},
+        )
+        return result["bio"]
+
     async def set_name_style(
         self,
         *,
@@ -177,6 +188,7 @@ class Melvin(commands.Bot):
             log.info("DNS resolver successfully configured.")
         except Exception:
             log.exception("Could not configure DNS resolver")
+        self.add_view(HelpView(self, timeout=None))
         self.add_view(HelpView(self, timeout=None))
         status.set_start_time()
         log.info("Logging started.")
