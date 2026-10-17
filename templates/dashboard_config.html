@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_icons.html" import icon %}
 {% from "_banner.html" import banner %}
+{% from "_dropdown.html" import dropdown %}
 {% block content %}
 <div class="docs-layout dashboard-layout">
     {% include "_dashboard_sidebar.html" %}
@@ -37,28 +38,19 @@
                 <p class="dashboard-field-description" id="{{ id }}-description">{{ setting.description }}</p>
 
                 {% if setting.kind == "channels" %}
-                <div class="dashboard-checklist" id="{{ id }}" role="group" aria-describedby="{{ id }}-description">
-                    {% for value, label in field.options %}
-                    <label class="dashboard-checkbox">
-                        <input type="checkbox" name="{{ setting.key }}" value="{{ value }}"
-                               {% if value in field.selected %}checked{% endif %} {% if field.locked %}disabled{% endif %}>
-                        {{ label }}
-                    </label>
-                    {% else %}
-                    <p class="dashboard-field-description">This server doesn't have any channels Melvin can see.</p>
-                    {% endfor %}
-                </div>
+                {% if field.options %}
+                {{ dropdown(id, setting.key, field.options, field.selected, multiple=true, locked=field.locked) }}
+                {% else %}
+                <p class="dashboard-field-description">This server doesn't have any channels Melvin can see.</p>
+                {% endif %}
 
                 {% elif setting.kind in ["channel", "role", "choice"] %}
-                <select name="{{ setting.key }}" id="{{ id }}" class="dashboard-input"
-                        aria-describedby="{{ id }}-description" {% if field.locked %}disabled{% endif %}>
-                    {% if setting.kind != "choice" %}
-                    <option value="">None</option>
-                    {% endif %}
-                    {% for value, label in field.options %}
-                    <option value="{{ value }}" {% if value == field.value %}selected{% endif %}>{{ label }}</option>
-                    {% endfor %}
-                </select>
+                {% set options = field.options if setting.kind == "choice" else [("", "None")] + field.options | list %}
+                {% set current = field.value or "" %}
+                {% if current not in options | map(attribute=0) | list and options %}
+                {% set current = options[0][0] %}
+                {% endif %}
+                {{ dropdown(id, setting.key, options, [current], locked=field.locked) }}
 
                 {% elif setting.kind == "image" %}
                 {% if field.value %}
@@ -107,4 +99,6 @@
         {% endif %}
     </main>
 </div>
+
+<script src="{{ url_for('static', filename='js/dropdown.js') }}"></script>
 {% endblock %}
