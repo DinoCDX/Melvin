@@ -7,9 +7,9 @@ from discord.ext import commands
 
 import module_config
 import module_settings
-from globals import DATA_DIR, ERROR_MESSAGE, PRIMARY, SECONDARY, TERTIARY
+from globals import DATA_DIR, PRIMARY, SECONDARY, TERTIARY
 from module_registry import Module, Setting
-from ui import ErrorUI, LargeSeparator, open_config
+from ui import LargeSeparator, open_config
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -22,12 +22,43 @@ MODULE = Module(
     settings=(
         Setting(
             "log_channel",
-            "Log channel",
-            "The channel audit logs are posted in. Nothing is logged until one is set.",
+            "Audit channel",
+            "Used for any event without its own channel below. Nothing is logged until one is set.",
+            "channel",
+        ),
+        Setting(
+            "message_channel",
+            "Message channel",
+            "Message edits and deletes. Uses the audit channel if not set.",
+            "channel",
+        ),
+        Setting(
+            "member_channel",
+            "Member channel",
+            "Joins, leaves, bans, and member or profile changes. Uses the audit channel if not set.",
+            "channel",
+        ),
+        Setting(
+            "server_channel",
+            "Server channel",
+            "Server, channel, and role changes. Uses the audit channel if not set.",
+            "channel",
+        ),
+        Setting(
+            "other_channel",
+            "Other channel",
+            "Voice channel activity and anything else. Uses the audit channel if not set.",
             "channel",
         ),
     ),
 )
+
+LOG_CHANNEL_SETTINGS = {
+    "message": "message_channel",
+    "member": "member_channel",
+    "server": "server_channel",
+    "other": "other_channel",
+}
 
 log = logging.getLogger(__name__)
 
@@ -110,24 +141,6 @@ class AuditCog(
             lambda row: (int(row[0]), {"log_channel": row[1]}),
         )
 
-    async def cog_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "**You do not have permission to do this.**"
-        elif isinstance(error, app_commands.NoPrivateMessage):
-            msg = "**This command can only be used in a server.**"
-        else:
-            msg = ERROR_MESSAGE
-
-        view = ErrorUI(msg)
-        if interaction.response.is_done():
-            await interaction.followup.send(view=view, ephemeral=True)
-        else:
-            await interaction.response.send_message(view=view, ephemeral=True)
-
     @app_commands.command(
         name="config",
         description="Change audit log settings for this server.",
@@ -136,10 +149,15 @@ class AuditCog(
     async def config(self, interaction: discord.Interaction) -> None:
         await open_config(interaction, "audit")
 
-    async def get_log_channel(self, guild_id: int) -> discord.TextChannel | None:
+    async def get_log_channel(
+        self,
+        guild_id: int,
+        category: str,
+    ) -> discord.TextChannel | None:
         if not await module_settings.is_enabled(guild_id, "audit"):
             return None
-        channel_id = await module_config.get(guild_id, "audit", "log_channel")
+        values = await module_config.get_all(guild_id, "audit")
+        channel_id = values[LOG_CHANNEL_SETTINGS[category]] or values["log_channel"]
         channel = self.bot.get_channel(int(channel_id)) if channel_id else None
         return channel if isinstance(channel, discord.TextChannel) else None
 
@@ -150,11 +168,12 @@ class AuditCog(
         title: str | None,
         info: str,
         *,
+        category: str,
         accessory: discord.ui.Item | None = None,
         sections: Sequence[Sequence[str]] = (),
         when: datetime | None = None,
     ) -> None:
-        channel = await self.get_log_channel(guild_id)
+        channel = await self.get_log_channel(guild_id, category)
         if channel is None:
             return
 
@@ -189,6 +208,7 @@ class AuditCog(
             None,
             f"**{member} joined.**\n**Member #{member.guild.member_count}.**",
             accessory=_thumbnail(member),
+            category="member",
         )
 
     @commands.Cog.listener()
@@ -199,6 +219,7 @@ class AuditCog(
             None,
             f"**{member} left.**\n**Member #{member.guild.member_count}.**",
             accessory=_thumbnail(member),
+            category="member",
         )
 
     @commands.Cog.listener()
@@ -239,6 +260,7 @@ class AuditCog(
                 f"**Member:** {after.mention} | {after.id}",
                 accessory=_thumbnail(after),
                 sections=_changes(changes),
+                category="member",
             )
 
     @commands.Cog.listener()
@@ -263,6 +285,7 @@ class AuditCog(
                 f"**User:** {after.mention} | {after.id}",
                 accessory=_thumbnail(after),
                 sections=_changes(changes),
+                category="member",
             )
 
     @commands.Cog.listener()
@@ -294,6 +317,7 @@ class AuditCog(
             ),
             sections=sections,
             when=after.edited_at,
+            category="message",
         )
 
     @commands.Cog.listener()
@@ -310,6 +334,7 @@ class AuditCog(
             f"**Author:** {msg.author.mention} | {msg.author.id}\n"
             f"**Channel:** {_channel_display(msg.channel)}",
             sections=sections,
+            category="message",
         )
 
     @commands.Cog.listener()
@@ -348,6 +373,7 @@ class AuditCog(
             title,
             f"**Member:** {member.mention} | {member.id}\n{line}",
             accessory=_thumbnail(member),
+            category="other",
         )
 
     @commands.Cog.listener()
@@ -357,6 +383,7 @@ class AuditCog(
             ADDED,
             "Channel Created",
             f"**Channel:** {channel.mention} | {channel.id}\n**Type:** {channel.type}",
+            category="server",
         )
 
     @commands.Cog.listener()
@@ -366,6 +393,7 @@ class AuditCog(
             REMOVED,
             "Channel Deleted",
             f"**Name:** #{channel.name} | {channel.id}\n**Type:** {channel.type}",
+            category="server",
         )
 
     @commands.Cog.listener()
@@ -387,6 +415,7 @@ class AuditCog(
                 "Channel Updated",
                 f"**Channel:** {after.mention} | {after.id}",
                 sections=_changes(changes),
+                category="server",
             )
 
     @commands.Cog.listener()
@@ -396,6 +425,7 @@ class AuditCog(
             ADDED,
             "Role Created",
             f"**Role:** {role.mention} | {role.id}",
+            category="server",
         )
 
     @commands.Cog.listener()
@@ -405,6 +435,7 @@ class AuditCog(
             REMOVED,
             "Role Deleted",
             f"**Name:** {role.name} | {role.id}",
+            category="server",
         )
 
     @commands.Cog.listener()
@@ -435,6 +466,27 @@ class AuditCog(
                 "Role Updated",
                 f"**Role:** {after.mention} | {after.id}",
                 sections=_changes(changes),
+                category="server",
+            )
+
+    @commands.Cog.listener()
+    async def on_guild_update(self, before: discord.Guild, after: discord.Guild) -> None:
+        changes = []
+        if before.name != after.name:
+            changes.append(f"**Name:** {before.name} | {after.name}")
+        if before.icon != after.icon:
+            changes.append("**Icon changed.**")
+        if before.owner_id != after.owner_id:
+            changes.append(f"**Owner:** <@{before.owner_id}> | <@{after.owner_id}>")
+
+        if changes:
+            await self._log(
+                after.id,
+                UPDATED,
+                "Server Updated",
+                f"**Server:** {after.name} | {after.id}",
+                sections=_changes(changes),
+                category="server",
             )
 
     @commands.Cog.listener()
@@ -449,6 +501,7 @@ class AuditCog(
             "Member Banned",
             f"**User:** {user} | {user.id}",
             accessory=_thumbnail(user),
+            category="member",
         )
 
     @commands.Cog.listener()
@@ -459,6 +512,7 @@ class AuditCog(
             "Member Unbanned",
             f"**User:** {user} | {user.id}",
             accessory=_thumbnail(user),
+            category="member",
         )
 
 

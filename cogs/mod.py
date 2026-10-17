@@ -207,24 +207,6 @@ class ModCog(
         except discord.HTTPException:
             pass
 
-    async def cog_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            message = "**You lack permission(s) required to run this command.**"
-        elif isinstance(error, app_commands.BotMissingPermissions):
-            message = "**I lack permission(s) required to run this command.**"
-        else:
-            message = "**An unexpected error occurred.**"
-
-        view = ErrorUI(message)
-        if interaction.response.is_done():
-            await interaction.followup.send(view=view, ephemeral=True)
-        else:
-            await interaction.response.send_message(view=view, ephemeral=True)
-
     @cases.command(
         name="view",
         description="View moderation cases for a user.",
