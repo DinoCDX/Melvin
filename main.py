@@ -97,6 +97,17 @@ class Melvin(commands.Bot):
             ),
         )
 
+    async def get_bio(self, *, guild: discord.Guild) -> None:
+        result = await self.http.request(
+            route=discord.http.Route(
+                "PATCH",
+                "/guilds/{guild_id}/members/@me",
+                guild_id=guild.id,
+            ),
+            json={},
+        )
+        return result["bio"]
+
     async def set_name_style(
         self,
         *,

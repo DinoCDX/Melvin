@@ -489,7 +489,9 @@ class StarboardCog(
             return False
         except discord.HTTPException:
             log.warning(
-                "Couldn't update starboard post %s in guild %s", post_id, guild.id
+                "Couldn't update starboard post %s in guild %s",
+                post_id,
+                guild.id,
             )
         return True
 
@@ -510,7 +512,9 @@ class StarboardCog(
             pass
         except discord.HTTPException:
             log.warning(
-                "Couldn't delete starboard post %s in guild %s", post_id, guild.id
+                "Couldn't delete starboard post %s in guild %s",
+                post_id,
+                guild.id,
             )
 
     async def _refresh(
