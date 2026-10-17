@@ -49,6 +49,12 @@ SYSTEM_PROMPT = (
 SEARCH_PROMPT = (
     "Use the provided search context to ground your answer relative to today's date. "
 )
+QUERY_PROMPT = (
+    "Rewrite the user's latest message into a short, standalone web search query, "
+    "using the earlier conversation to fill in what it refers to. "
+    "Reply with only the query, no quotes or explanation."
+)
+MAX_SEARCH_QUERY = 200
 
 
 def paginate(text: str, size: int = PAGE_SIZE) -> list[str]:
@@ -284,6 +290,29 @@ class AgentCog(
         else:
             await interaction.response.send_message(view=view, ephemeral=True)
 
+    async def _search_query(self, prompt: str, history: list[Message]) -> str:
+        if not history:
+            return prompt
+        try:
+            response = await self.client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": QUERY_PROMPT},
+                    *history,
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0,
+                reasoning_effort="low",
+            )
+            query = (response.choices[0].message.content or "").strip().strip('"')
+        except Exception:
+            log.exception("Failed to rewrite follow-up search query")
+            query = ""
+        if not query:
+            last = next(m["content"] for m in reversed(history) if m["role"] == "user")
+            query = f"{last} {prompt}"
+        return _truncate(query, MAX_SEARCH_QUERY)
+
     async def query_groq(
         self,
         prompt: str,
@@ -297,7 +326,8 @@ class AgentCog(
         results: list[dict[str, str]] | None = None
         if use_search:
             system += SEARCH_PROMPT
-            results = await asyncio.to_thread(_web_results, prompt)
+            query = await self._search_query(prompt, history)
+            results = await asyncio.to_thread(_web_results, query)
             search = _web_context(results)
             context = f"--- SEARCH CONTEXT ---\n{search}\n--- END CONTEXT ---\n"
 

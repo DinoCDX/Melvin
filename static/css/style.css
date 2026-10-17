@@ -43,7 +43,7 @@
 
 body {
     background: var(--bg);
-    font-family: 'Quicksand', ui-rounded, 'SF Pro Rounded', system-ui, sans-serif;
+    font-family: 'Urbanist', system-ui, sans-serif;
     color: var(--text);
     display: flex;
     flex-direction: column;
