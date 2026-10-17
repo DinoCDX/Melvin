@@ -1,4 +1,5 @@
 import logging
+import re
 
 import discord
 from discord import app_commands
@@ -6,17 +7,9 @@ from discord.ext import commands
 
 import module_settings
 from globals import ERROR_MESSAGE, MELVIN_CHECK_EMOJI, MELVIN_CROSS_EMOJI, MELVIN_EMOJI
-from ui import ErrorUI, Paginator
+from ui import ErrorUI, SmallSeparator
 
 log = logging.getLogger(__name__)
-
-PAGE_SIZE = 8
-TITLE = f"# {MELVIN_EMOJI} Modules\n-# **Turn Melvin's features on or off for this server.**"
-FILTERS = (
-    ("all", "All modules", "Every module."),
-    ("on", "Enabled", "Only modules that are on."),
-    ("off", "Disabled", "Only modules that are off."),
-)
 
 
 async def _reply_error(interaction: discord.Interaction, message: str) -> None:
@@ -27,129 +20,118 @@ async def _reply_error(interaction: discord.Interaction, message: str) -> None:
         await interaction.response.send_message(view=view, ephemeral=True)
 
 
-def _order(filter_by: str, disabled: set[str]) -> list[str]:
-    keys = list(module_settings.MODULES)
-    if filter_by == "on":
-        keys = [key for key in keys if key not in disabled]
-    elif filter_by == "off":
-        keys = [key for key in keys if key in disabled]
-    return sorted(keys, key=lambda key: key in disabled)
+TOGGLE_TEMPLATE = r"modules:toggle:(?P<guild>\d+):(?P<module>[a-z0-9_]+):(?P<state>[01])"
+
+
+def _toggle_id(guild_id: int, module: str, enabled: bool) -> str:
+    return f"modules:toggle:{guild_id}:{module}:{int(enabled)}"
+
+
+def _toggle_look(enabled: bool) -> dict:
+    return {
+        "label": "On" if enabled else "Off",
+        "emoji": MELVIN_CHECK_EMOJI if enabled else MELVIN_CROSS_EMOJI,
+        "style": discord.ButtonStyle.secondary,
+    }
+
+
+async def _toggle(
+    interaction: discord.Interaction,
+    guild_id: int,
+    module: str,
+    enabled: bool,
+) -> None:
+    if interaction.guild_id != guild_id:
+        await _reply_error(interaction, "**This button belongs to another server.**")
+        return
+
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    if not (permissions and permissions.manage_guild):
+        await _reply_error(interaction, "**You do not have permission to do this.**")
+        return
+    if module not in module_settings.MODULES:
+        await _reply_error(interaction, ERROR_MESSAGE)
+        return
+
+    try:
+        await module_settings.set_enabled(guild_id, module, enabled=not enabled)
+    except Exception:
+        log.exception("Failed to toggle module %s in guild %s", module, guild_id)
+        await _reply_error(interaction, ERROR_MESSAGE)
+        return
+
+    await interaction.response.edit_message(view=await ModulesView.build(guild_id))
 
 
 class ToggleButton(discord.ui.Button["ModulesView"]):
     def __init__(self, guild_id: int, module: str, *, enabled: bool) -> None:
         super().__init__(
-            label="On" if enabled else "Off",
-            emoji=MELVIN_CHECK_EMOJI if enabled else MELVIN_CROSS_EMOJI,
-            style=discord.ButtonStyle.secondary,
+            **_toggle_look(enabled),
+            custom_id=_toggle_id(guild_id, module, enabled),
         )
         self.guild_id = guild_id
         self.module = module
         self.enabled = enabled
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        permissions = getattr(interaction.user, "guild_permissions", None)
-        if not (permissions and permissions.manage_guild):
-            await _reply_error(
-                interaction,
-                "**You do not have permission to do this.**",
-            )
-            return
-
-        try:
-            await module_settings.set_enabled(
-                self.guild_id,
-                self.module,
-                enabled=not self.enabled,
-            )
-        except Exception:
-            log.exception(
-                "Failed to toggle module %s in guild %s",
-                self.module,
-                self.guild_id,
-            )
-            await _reply_error(interaction, ERROR_MESSAGE)
-            return
-
-        view = self.view
-        if not isinstance(view, ModulesView):
-            return
-        await view.refresh(reorder=False)
-        await interaction.response.edit_message(view=view)
+        await _toggle(interaction, self.guild_id, self.module, self.enabled)
 
 
-class FilterSelect(discord.ui.Select["ModulesView"]):
-    def __init__(self, current: str) -> None:
+class ToggleDynamic(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=TOGGLE_TEMPLATE,
+):
+    def __init__(self, *, guild_id: int, module: str, enabled: bool) -> None:
         super().__init__(
-            placeholder="Show modules",
-            options=[
-                discord.SelectOption(
-                    label=label,
-                    value=value,
-                    description=description,
-                    default=value == current,
-                )
-                for value, label, description in FILTERS
-            ],
+            discord.ui.Button(
+                **_toggle_look(enabled),
+                custom_id=_toggle_id(guild_id, module, enabled),
+            ),
+        )
+        self.guild_id = guild_id
+        self.module = module
+        self.enabled = enabled
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Item,
+        match: re.Match[str],
+        /,
+    ) -> ToggleDynamic:
+        return cls(
+            guild_id=int(match["guild"]),
+            module=match["module"],
+            enabled=match["state"] == "1",
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        view = self.view
-        if not isinstance(view, ModulesView):
-            return
-        view.filter_by = self.values[0]
-        for option in self.options:
-            option.default = option.value == view.filter_by
-        await view.refresh(reorder=True)
-        await interaction.response.edit_message(view=view)
+        await _toggle(interaction, self.guild_id, self.module, self.enabled)
 
 
-class ModulesView(Paginator):
-    def __init__(
-        self,
-        guild_id: int,
-        disabled: set[str],
-        *,
-        filter_by: str = "all",
-        page: int = 0,
-        order: list[str] | None = None,
-    ) -> None:
-        self.guild_id = guild_id
-        self.filter_by = filter_by
-        self.order = order if order is not None else _order(filter_by, disabled)
-        super().__init__(
-            TITLE,
-            self._sections(disabled),
-            data_name="modules",
-            per_page=PAGE_SIZE,
-            container=True,
-            timeout=300,
+class ModulesView(discord.ui.LayoutView):
+    def __init__(self, guild_id: int, disabled: set[str]) -> None:
+        super().__init__(timeout=300)
+        container = discord.ui.Container(
+            discord.ui.TextDisplay(
+                f"# {MELVIN_EMOJI} Modules\n"
+                "-# **Turn Melvin's features on or off for this server.**",
+            ),
+            SmallSeparator(),
         )
-        self.add_over(discord.ui.ActionRow(FilterSelect(filter_by)))
-        self.current_page = page
-        self.update_data(TITLE, self._sections(disabled), keep_page=True)
-
-    def _sections(self, disabled: set[str]) -> list[discord.ui.Section]:
-        sections: list[discord.ui.Section] = []
-        for key in self.order:
-            label, description = module_settings.MODULES[key]
-            sections.append(
+        for module, (label, description) in module_settings.MODULES.items():
+            container.add_item(
                 discord.ui.Section(
                     f"**{label}**\n-# {description}",
                     accessory=ToggleButton(
-                        self.guild_id,
-                        key,
-                        enabled=key not in disabled,
+                        guild_id,
+                        module,
+                        enabled=module not in disabled,
                     ),
                 ),
             )
-        return sections
-
-    async def refresh(self, *, reorder: bool) -> None:
-        disabled = await module_settings.disabled_modules(self.guild_id)
-        if reorder:
-            self.order = _order(self.filter_by, disabled)
-        self.update_data(TITLE, self._sections(disabled), keep_page=not reorder)
+        self.add_item(container)
 
     @classmethod
     async def build(cls, guild_id: int) -> ModulesView:
@@ -164,6 +146,12 @@ class ModulesCog(
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__()
         self.bot = bot
+
+    async def cog_load(self) -> None:
+        self.bot.add_dynamic_items(ToggleDynamic)
+
+    async def cog_unload(self) -> None:
+        self.bot.remove_dynamic_items(ToggleDynamic)
 
     async def cog_app_command_error(
         self,
@@ -188,9 +176,9 @@ class ModulesCog(
     async def modules(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             return
-        view = await ModulesView.build(interaction.guild.id)
-        await interaction.response.send_message(view=view)
-        view.message = await interaction.original_response()
+        await interaction.response.send_message(
+            view=await ModulesView.build(interaction.guild.id),
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

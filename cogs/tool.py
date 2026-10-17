@@ -643,7 +643,7 @@ class ToolCog(
         answer = random.choice(EIGHTBALL)
         await interaction.followup.send(
             view=ResponseUI(f"**{prompt}**\n<:8ball:1548098650482413608>**{answer}**"),
-            allowed_mentions=discord.AllowedMentions(everyone=False),
+            allowed_mentions=NO_MENTIONS,
         )
 
 
