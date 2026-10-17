@@ -27,7 +27,8 @@ The same settings can be changed from the dashboard on the website, under Config
 | Setting | Description |
 |------|--------------|
 | Welcome channel | The channel welcome messages are sent in. Nothing is sent until one is set. |
-| Message | The message text. Defaults to `Welcome, {member}!`. |
+| Message | The message text. Defaults to `Welcome, {member}!`. Separate several messages with `$` and one is picked at random for each join. |
+| Bot welcomes | Whether bots get the welcome message too. Defaults to skipping them. |
 | Image | Shown under the message. PNG, JPG, GIF, or WebP, up to 8 MB. The form has a checkbox to remove the current image. |
 | First and second button labels | The text on each link button. Default to "Link 1" and "Link 2". |
 | First and second button links | Where each button goes. Leave empty for no button. Links must start with `http://` or `https://`. |
@@ -52,4 +53,4 @@ If no welcome channel is set, the command replies with an error message asking y
 Otherwise, the command replies with the welcome message exactly as a new member would see it, using the command user as the example member, without the select menu.
 
 ## Member joins
-When a member joins a guild with a welcome channel set, the bot sends the welcome message to that channel. If the bot can't post in the channel, the message is skipped silently.
+When a member joins a guild with a welcome channel set, the bot sends the welcome message to that channel. Bots are skipped unless Bot welcomes is on. If the message contains several parts separated by `$`, one part is picked at random. If the bot can't post in the channel, the message is skipped silently.

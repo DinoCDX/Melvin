@@ -30,6 +30,9 @@ MODULE = Module(
 log = logging.getLogger(__name__)
 
 NO_PINGS = discord.AllowedMentions(users=False, roles=False)
+REASON_MAX_LENGTH = 300
+Reason = app_commands.Range[str, 1, REASON_MAX_LENGTH]
+BOT_PERMISSION_LABELS = {"kick_members": "Kick Members", "ban_members": "Ban Members"}
 DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 MAX_MUTE_SECONDS = 28 * 86400
 Lockable = discord.TextChannel | discord.VoiceChannel | discord.Thread
@@ -69,6 +72,24 @@ def _target_error(
         return f"You tried to {verb} someone equal to or above you."
     if check_bot and member.top_role >= guild.me.top_role:
         return f"I tried to {verb} someone equal to or above me."
+    return None
+
+
+def _action_error(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    verb: str,
+    permission: str,
+) -> str | None:
+    perms = interaction.guild.me.guild_permissions
+    if not (perms.administrator or getattr(perms, permission)):
+        label = BOT_PERMISSION_LABELS[permission]
+        return f"I lack the {label} permission required to {verb} members."
+    if error := _target_error(interaction, member, verb):
+        return error
+    can_act = member.kickable if verb == "kick" else member.bannable
+    if not can_act:
+        return f"I tried to {verb} someone I don't have permission to act on."
     return None
 
 
@@ -272,7 +293,7 @@ class ModCog(
         self,
         interaction: discord.Interaction,
         member: discord.Member,
-        reason: str = "No reason provided.",
+        reason: Reason = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -299,12 +320,12 @@ class ModCog(
         self,
         interaction: discord.Interaction,
         member: discord.Member,
-        reason: str = "No reason provided.",
+        reason: Reason = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
-        if error := _target_error(interaction, member, "kick"):
+        if error := _action_error(interaction, member, "kick", "kick_members"):
             await _error(interaction, error)
             return
 
@@ -336,12 +357,12 @@ class ModCog(
         self,
         interaction: discord.Interaction,
         member: discord.Member,
-        reason: str = "No reason provided.",
+        reason: Reason = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
-        if error := _target_error(interaction, member, "ban"):
+        if error := _action_error(interaction, member, "ban", "ban_members"):
             await _error(interaction, error)
             return
 
@@ -374,7 +395,7 @@ class ModCog(
         self,
         interaction: discord.Interaction,
         user: discord.User,
-        reason: str = "No reason provided.",
+        reason: Reason = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -419,7 +440,7 @@ class ModCog(
         interaction: discord.Interaction,
         member: discord.Member,
         duration: str,
-        reason: str = "No reason provided.",
+        reason: Reason = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -464,7 +485,7 @@ class ModCog(
         self,
         interaction: discord.Interaction,
         member: discord.Member,
-        reason: str = "No reason given.",
+        reason: Reason = "No reason given.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -556,7 +577,7 @@ class ModCog(
         self,
         interaction: discord.Interaction,
         channel: Lockable | None = None,
-        reason: str = "No reason given.",
+        reason: Reason = "No reason given.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild:
@@ -581,7 +602,7 @@ class ModCog(
         self,
         interaction: discord.Interaction,
         channel: Lockable | None = None,
-        reason: str = "No reason given.",
+        reason: Reason = "No reason given.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild:
@@ -616,7 +637,7 @@ class ModCog(
         interaction: discord.Interaction,
         member: discord.Member,
         role: discord.Role,
-        reason: str = "No reason provided.",
+        reason: Reason = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -671,7 +692,7 @@ class ModCog(
         interaction: discord.Interaction,
         member: discord.Member,
         role: discord.Role,
-        reason: str = "No reason provided.",
+        reason: Reason = "No reason provided.",
     ) -> None:
         await interaction.response.defer()
         if not interaction.guild or not isinstance(interaction.user, discord.Member):

@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import module_registry
+import module_settings
 from globals import (
     BROWSER,
     ERROR_MESSAGE,
@@ -141,6 +142,9 @@ def help_commands(page: HelpPage) -> str:
     )
 
 
+HELP_TIMEOUT = 300
+
+
 class HelpSelect(discord.ui.Select):
     def __init__(self, pages: list[HelpPage]) -> None:
         super().__init__(
@@ -157,9 +161,17 @@ class HelpSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if isinstance(self.view, HelpView):
-            self.view.show(self.values[0])
-            await interaction.response.edit_message(view=self.view)
+        if not isinstance(self.view, HelpView):
+            return
+        hidden = (
+            await module_settings.disabled_modules(interaction.guild_id)
+            if interaction.guild_id is not None
+            else set()
+        )
+        view = HelpView(self.view.bot, hidden)
+        key = self.values[0]
+        view.show(key if key in view.pages else next(iter(view.pages)))
+        await interaction.response.edit_message(view=view)
 
 
 class HelpView(discord.ui.LayoutView):
@@ -167,8 +179,11 @@ class HelpView(discord.ui.LayoutView):
         self,
         bot: commands.Bot,
         hidden: set[str] | frozenset[str] = frozenset(),
+        *,
+        timeout: float | None = HELP_TIMEOUT,
     ) -> None:
-        super().__init__(timeout=None)
+        super().__init__(timeout=timeout)
+        self.bot = bot
         self.pages = {page.key: page for page in help_pages(bot, hidden)}
 
         if not self.pages:
@@ -280,7 +295,7 @@ class CasesView(discord.ui.LayoutView):
         db_path: str,
         current_action: str = "all",
     ) -> None:
-        super().__init__(timeout=None)
+        super().__init__(timeout=300)
         self.target_user = target_user
         self.db_path = db_path
         self.current_action = current_action

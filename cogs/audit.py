@@ -81,7 +81,7 @@ def _channel_display(
         if parent is None:
             return channel.mention
         return f"{parent.mention} -> {channel.mention} | {parent.id} -> {channel.id}"
-    if isinstance(channel, discord.TextChannel):
+    if isinstance(channel, discord.abc.GuildChannel):
         return f"{channel.mention} | {channel.id}"
     return "Unknown Channel"
 
