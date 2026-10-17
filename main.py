@@ -189,7 +189,6 @@ class Melvin(commands.Bot):
         except Exception:
             log.exception("Could not configure DNS resolver")
         self.add_view(HelpView(self, timeout=None))
-        self.add_view(HelpView(self, timeout=None))
         status.set_start_time()
         log.info("Logging started.")
 
