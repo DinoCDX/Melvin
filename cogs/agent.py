@@ -34,6 +34,11 @@ PAGE_SIZE = 2000
 MAX_SOURCE_TITLE = 80
 MAX_SOURCE_URL = 150
 MAX_TITLE_PROMPT = 200
+MAX_FOLLOW_UP = 1000
+MAX_HISTORY_TURNS = 3
+MAX_OLD_ANSWER = 1000
+
+type Message = dict[str, str]
 
 SYSTEM_PROMPT = (
     "Today's date is {date}. "
@@ -80,6 +85,16 @@ def _web_context(results: list[dict[str, str]] | None) -> str:
     )
 
 
+def _truncate(text: str, length: int) -> str:
+    return text[: length - 3] + "..." if len(text) > length else text
+
+
+def _trim_old(message: Message) -> Message:
+    if message["role"] != "assistant":
+        return message
+    return {**message, "content": _truncate(message["content"], MAX_OLD_ANSWER)}
+
+
 def _source_links(results: list[dict[str, str]]) -> str:
     lines: list[str] = []
     for i, result in enumerate(results, 1):
@@ -91,10 +106,112 @@ def _source_links(results: list[dict[str, str]]) -> str:
         ):
             continue
         title = (result.get("title") or url).replace("[", "(").replace("]", ")")
-        if len(title) > MAX_SOURCE_TITLE:
-            title = title[: MAX_SOURCE_TITLE - 3] + "..."
+        title = _truncate(title, MAX_SOURCE_TITLE)
         lines.append(f"-# {i}. [{discord.utils.escape_mentions(title)}](<{url}>)")
     return "\n".join(lines)
+
+
+class FollowUpModal(discord.ui.Modal, title="Followup"):
+    def __init__(self, cog: AgentCog, history: list[Message], *, search: bool) -> None:
+        super().__init__()
+        self.cog = cog
+        self.history = history
+        self._prompt_input = discord.ui.TextInput(
+            style=discord.TextStyle.paragraph,
+            placeholder="ex: Can you explain that more simply?",
+            min_length=1,
+            max_length=MAX_FOLLOW_UP,
+        )
+        self.add_item(
+            discord.ui.Label(
+                text="Enter a follow-up question.",
+                description=f"The last {MAX_HISTORY_TURNS} questions and answers are remembered.",
+                component=self._prompt_input,
+            ),
+        )
+        self._search_input = discord.ui.Checkbox(default=search)
+        self.add_item(
+            discord.ui.Label(
+                text="Search the web",
+                component=self._search_input,
+            ),
+        )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(thinking=True)
+        await self.cog.answer(
+            interaction,
+            self._prompt_input.value,
+            history=self.history,
+            search=self._search_input.value,
+        )
+
+
+class AnswerRow(discord.ui.ActionRow[Paginator]):
+    def __init__(
+        self,
+        cog: AgentCog,
+        user_id: int,
+        prompt: str,
+        ai_response: str,
+        history: list[Message],
+        *,
+        search: bool,
+    ) -> None:
+        super().__init__()
+        self.cog = cog
+        self.user_id = user_id
+        self.prompt = prompt
+        self.ai_response = ai_response
+        self.history = history
+        self.search = search
+        self.btn_retry.label = "Retry without Search" if search else "Retry with Search"
+
+    async def _is_asker(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.user_id:
+            return True
+        await interaction.response.send_message(
+            view=ErrorUI("**Only the person who asked can use this.**"),
+            ephemeral=True,
+        )
+        return False
+
+    @discord.ui.button(label="Followup")
+    async def btn_follow_up(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button[Paginator],
+    ) -> None:
+        if not await self._is_asker(interaction):
+            return
+        turns = [
+            *map(_trim_old, self.history),
+            {"role": "user", "content": self.prompt},
+            {"role": "assistant", "content": self.ai_response},
+        ]
+        await interaction.response.send_modal(
+            FollowUpModal(
+                self.cog,
+                turns[-MAX_HISTORY_TURNS * 2 :],
+                search=self.search,
+            ),
+        )
+
+    @discord.ui.button(label="Retry with Search")
+    async def btn_retry(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button[Paginator],
+    ) -> None:
+        if not await self._is_asker(interaction):
+            return
+        await interaction.response.defer(thinking=True)
+        await self.cog.answer(
+            interaction,
+            self.prompt,
+            history=self.history,
+            search=not self.search,
+        )
 
 
 class AgentCog(
@@ -171,6 +288,7 @@ class AgentCog(
         self,
         prompt: str,
         *,
+        history: list[Message],
         use_search: bool = False,
     ) -> tuple[str, list[dict[str, str]]]:
         date = datetime.now(UTC).strftime("%B %d, %Y")
@@ -188,6 +306,7 @@ class AgentCog(
                 model=GROQ_MODEL,
                 messages=[
                     {"role": "system", "content": system},
+                    *history,
                     {
                         "role": "user",
                         "content": f"--- CURRENT DATE: {date} ---\n{context}\nUser Question: {prompt}",
@@ -221,7 +340,16 @@ class AgentCog(
         search: bool = False,
     ) -> None:
         await interaction.response.defer()
+        await self.answer(interaction, prompt, history=[], search=search)
 
+    async def answer(
+        self,
+        interaction: discord.Interaction,
+        prompt: str,
+        *,
+        history: list[Message],
+        search: bool,
+    ) -> None:
         allowed, used, retry_after = await self._check_rate_limit(interaction.user.id)
         if not allowed:
             minutes = max(1, retry_after // 60)
@@ -234,15 +362,21 @@ class AgentCog(
 
         try:
             start = time.perf_counter()
-            ai_response, results = await self.query_groq(prompt, use_search=search)
+            ai_response, results = await self.query_groq(
+                prompt,
+                history=history,
+                use_search=search,
+            )
             elapsed = time.perf_counter() - start
             await self._record_request(interaction.user.id)
 
-            shown_prompt = prompt.replace("`", "")
-            if len(shown_prompt) > MAX_TITLE_PROMPT:
-                shown_prompt = shown_prompt[: MAX_TITLE_PROMPT - 3] + "..."
+            shown_prompt = _truncate(
+                prompt.replace("`", "").replace("\n", " "),
+                MAX_TITLE_PROMPT,
+            )
+            label = "Follow-up" if history else "Prompt"
             view = Paginator(
-                f"# Prompt: `{shown_prompt}`",
+                f"# {label}: `{shown_prompt}`",
                 paginate(ai_response),
                 data_name="Pages",
                 per_page=1,
@@ -268,6 +402,14 @@ class AgentCog(
                 discord.ui.TextDisplay(
                     f"-# {MELVIN_EMOJI} **Took {elapsed:.1f}s. {remaining}/{RATE_LIMIT} requests left this hour.**\n"
                     f"-# **{grounding} using {GROQ_MODEL}.**",
+                ),
+                AnswerRow(
+                    self,
+                    interaction.user.id,
+                    prompt,
+                    ai_response,
+                    history,
+                    search=search,
                 ),
             )
             view.message = await interaction.edit_original_response(view=view)
