@@ -20,7 +20,7 @@ The row stores the guild, target user, moderator, action type, reason, and times
 
 The bot tries to DM the target user a summary of the action, the reason, the case ID, and the guild name.
 
-For mute, unmute, and unban, the action runs first, and the case is only logged and the DM only sent once it succeeds. Kick and ban send the DM before the action, since the bot usually can't DM someone after they've left the guild. If the kick or ban then fails, the logged case is removed again.
+For mute, unmute, and unban, the action runs first, and the case is only logged and the DM only sent once it succeeds. Kick and ban send the DM before the action, since the bot usually can't DM someone after they've left the guild. Before anything is sent, the command checks that the bot has the Kick or Ban Members permission and that its top role is above the member's, so a kick or ban Discord would refuse stops with an error and no DM or case is created. If the action still fails, the logged case is removed again.
 
 If the DM fails for any reason (DMs closed, blocked, etc.), it is silently ignored.
 
@@ -62,7 +62,7 @@ Add a role to a member.
 |------|------|----------|--------------|
 | member | member | yes | The member to give the role to. |
 | role | role | yes | The role to add. |
-| reason | string | no | The reason for adding the role. Defaults to "No reason provided." |
+| reason | string | no | The reason for adding the role. Up to 300 characters. Defaults to "No reason provided." |
 
 **Permissions**
 
@@ -86,7 +86,7 @@ Remove a role from a member.
 |------|------|----------|--------------|
 | member | member | yes | The member to remove the role from. |
 | role | role | yes | The role to remove. |
-| reason | string | no | The reason for removing the role. Defaults to "No reason provided." |
+| reason | string | no | The reason for removing the role. Up to 300 characters. Defaults to "No reason provided." |
 
 **Permissions**
 
@@ -153,7 +153,7 @@ Warn a member.
 | Name | Type | Required | Description |
 |------|------|----------|--------------|
 | member | member | yes | The member to warn. |
-| reason | string | no | The reason for the warning. Defaults to "No reason provided." |
+| reason | string | no | The reason for the warning. Up to 300 characters. Defaults to "No reason provided." |
 
 **Permissions**
 
@@ -174,7 +174,7 @@ Kick a member.
 | Name | Type | Required | Description |
 |------|------|----------|--------------|
 | member | member | yes | The member to kick. |
-| reason | string | no | The reason for the kick. Defaults to "No reason provided." |
+| reason | string | no | The reason for the kick. Up to 300 characters. Defaults to "No reason provided." |
 
 **Permissions**
 
@@ -197,7 +197,7 @@ Ban a member.
 | Name | Type | Required | Description |
 |------|------|----------|--------------|
 | member | member | yes | The member to ban. |
-| reason | string | no | The reason for the ban. Defaults to "No reason provided." |
+| reason | string | no | The reason for the ban. Up to 300 characters. Defaults to "No reason provided." |
 
 **Permissions**
 
@@ -220,7 +220,7 @@ Unban a user.
 | Name | Type | Required | Description |
 |------|------|----------|--------------|
 | user | user | yes | The user to unban. |
-| reason | string | no | The reason for the unban. Defaults to "No reason provided." |
+| reason | string | no | The reason for the unban. Up to 300 characters. Defaults to "No reason provided." |
 
 **Permissions**
 
@@ -244,7 +244,7 @@ Mute a member using Discord's timeout feature.
 |------|------|----------|--------------|
 | member | member | yes | The member to mute. |
 | duration | string | yes | The duration of the mute, e.g. `10m`, `2h`, `1d`. |
-| reason | string | no | The reason for the mute. Defaults to "No reason provided." |
+| reason | string | no | The reason for the mute. Up to 300 characters. Defaults to "No reason provided." |
 
 **Permissions**
 
@@ -269,7 +269,7 @@ Remove a member's timeout early.
 | Name | Type | Required | Description |
 |------|------|----------|--------------|
 | member | member | yes | The member to unmute. |
-| reason | string | no | The reason for the unmute. Defaults to "No reason given." |
+| reason | string | no | The reason for the unmute. Up to 300 characters. Defaults to "No reason given." |
 
 **Permissions**
 
@@ -292,7 +292,7 @@ Lock a channel or thread, preventing regular members from sending messages.
 | Name | Type | Required | Description |
 |------|------|----------|--------------|
 | channel | channel or thread | no | The channel or thread to lock. Defaults to the current channel. |
-| reason | string | no | The reason for locking. Defaults to "No reason given." |
+| reason | string | no | The reason for locking. Up to 300 characters. Defaults to "No reason given." |
 
 **Permissions**
 
@@ -317,7 +317,7 @@ Unlock a channel or thread.
 | Name | Type | Required | Description |
 |------|------|----------|--------------|
 | channel | channel or thread | no | The channel or thread to unlock. Defaults to the current channel. |
-| reason | string | no | The reason for unlocking. Defaults to "No reason given." |
+| reason | string | no | The reason for unlocking. Up to 300 characters. Defaults to "No reason given." |
 
 **Permissions**
 
