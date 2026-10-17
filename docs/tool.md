@@ -163,3 +163,35 @@ The command replies with the question and one of nine answers, picked at random.
 **Example**
 Input: `/tool 8ball prompt: Will it rain tomorrow?`
 Output: `**Will it rain tomorrow?**`, followed by an answer like `Without a doubt.`
+
+## /tool remind
+Set a reminder. Melvin posts it in the channel where the command was used, and mentions you.
+
+**Parameters**
+`duration` (required): how long from now, like `10m`, `2h`, or `3d`. Accepts seconds (`s`), minutes (`m`), hours (`h`), and days (`d`).
+`message` (required): what to remind you about, up to 300 characters.
+
+**Permissions**
+None.
+
+**Behavior**
+Durations must be between 1 minute and 365 days. Each user can have up to 25 reminders at once. The reply is only visible to you and shows the reminder number and when it's due.
+Reminders are checked every 15 seconds, so a reminder can be up to 15 seconds late. They're saved, so they still fire after a restart.
+If the tool module is turned off in a server, its reminders wait until it's turned back on.
+If the channel has been deleted, or Melvin can no longer post there, the reminder is dropped.
+
+**Example**
+Input: `/tool remind duration:2h message:check the oven`
+Output: `Reminder #4 set`, due in 2 hours.
+
+## /tool reminders
+List your reminders, soonest first. The reply is only visible to you. Each entry shows its number, when it's due, and the start of its message.
+
+## /tool forget
+Cancel one of your reminders.
+
+**Parameters**
+`reminder_id` (required): the number shown by `/tool reminders` or when the reminder was set.
+
+**Behavior**
+You can only cancel your own reminders.
