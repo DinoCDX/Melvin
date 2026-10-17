@@ -17,6 +17,7 @@ import status
 from globals import (
     API_ICON,
     DATA_DIR,
+    ERROR_MESSAGE,
     MELVIN_EMOJI,
     SHARD_ICON,
     WEBSITE_URL,
@@ -82,6 +83,33 @@ class MelvinTree(app_commands.CommandTree):
             )
         return False
 
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "**You do not have permission to do this.**"
+        elif isinstance(error, app_commands.BotMissingPermissions):
+            missing = ", ".join(
+                perm.replace("_", " ").title() for perm in error.missing_permissions
+            )
+            msg = f"**I need {missing} to do this.**"
+        elif isinstance(error, app_commands.NoPrivateMessage):
+            msg = "**This command can only be used in a server.**"
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            msg = "**You are being rate limited.**"
+        else:
+            name = interaction.command.qualified_name if interaction.command else "unknown"
+            log.error("Unhandled error in /%s", name, exc_info=error)
+            msg = ERROR_MESSAGE
+
+        view = ErrorUI(msg)
+        if interaction.response.is_done():
+            await interaction.followup.send(view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(view=view, ephemeral=True)
+
 
 class Melvin(commands.Bot):
     def __init__(self) -> None:
@@ -96,17 +124,6 @@ class Melvin(commands.Bot):
                 private_channel=True,
             ),
         )
-
-    async def get_bio(self, *, guild: discord.Guild) -> None:
-        result = await self.http.request(
-            route=discord.http.Route(
-                "PATCH",
-                "/guilds/{guild_id}/members/@me",
-                guild_id=guild.id,
-            ),
-            json={},
-        )
-        return result["bio"]
 
     async def set_name_style(
         self,
