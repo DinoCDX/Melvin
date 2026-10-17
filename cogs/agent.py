@@ -275,21 +275,6 @@ class AgentCog(
             )
             await db.commit()
 
-    async def cog_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        view = ErrorUI(
-            "**You are being rate limited.**"
-            if isinstance(error, app_commands.CommandOnCooldown)
-            else "**Something went wrong.**",
-        )
-        if interaction.response.is_done():
-            await interaction.followup.send(view=view, ephemeral=True)
-        else:
-            await interaction.response.send_message(view=view, ephemeral=True)
-
     async def _search_query(self, prompt: str, history: list[Message]) -> str:
         if not history:
             return prompt

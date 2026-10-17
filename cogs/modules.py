@@ -279,19 +279,6 @@ class ModulesCog(
     async def cog_unload(self) -> None:
         self.bot.remove_dynamic_items(ToggleDynamic)
 
-    async def cog_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "**You do not have permission to do this.**"
-        elif isinstance(error, app_commands.NoPrivateMessage):
-            msg = "**This command can only be used in a server.**"
-        else:
-            msg = ERROR_MESSAGE
-        await _reply_error(interaction, msg)
-
     @app_commands.command(
         name="modules",
         description="Turn Melvin's features on or off for this server.",

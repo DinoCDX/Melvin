@@ -7,7 +7,7 @@ from discord.ext import commands
 
 import module_config
 import module_settings
-from globals import DATA_DIR, ERROR_MESSAGE
+from globals import DATA_DIR
 from module_registry import Module, Setting
 from ui import ErrorUI, GalleryWithItem, ResponseUI, open_config
 
@@ -170,25 +170,6 @@ class WelcomeCog(
                 },
             ),
         )
-
-    async def cog_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "**You do not have permission to do this.**"
-        elif isinstance(error, app_commands.NoPrivateMessage):
-            msg = "**This command can only be used in a server.**"
-        else:
-            log.error(error)
-            msg = ERROR_MESSAGE
-
-        view = ErrorUI(msg)
-        if interaction.response.is_done():
-            await interaction.followup.send(view=view, ephemeral=True)
-        else:
-            await interaction.response.send_message(view=view, ephemeral=True)
 
     @app_commands.command(
         name="config",

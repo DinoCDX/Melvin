@@ -9,14 +9,13 @@ from discord.ext import commands, tasks
 import module_config
 import module_settings
 from globals import (
-    ERROR_MESSAGE,
     LOG_CHANNEL,
     MELVIN_BANNER,
     DisplayNameEffect,
     DisplayNameFont,
 )
 from module_registry import Module, Setting
-from ui import ErrorUI, GalleryWithItem, open_config
+from ui import GalleryWithItem, open_config
 
 FONTS = (
     ("cherry_bomb", "Sakura"),
@@ -100,24 +99,6 @@ class StyleCog(
 
     async def cog_unload(self) -> None:
         self.sync_styles.cancel()
-
-    async def cog_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "**You do not have permission to do this.**"
-        elif isinstance(error, app_commands.NoPrivateMessage):
-            msg = "**This command can only be used in a server.**"
-        else:
-            msg = ERROR_MESSAGE
-
-        view = ErrorUI(msg)
-        if interaction.response.is_done():
-            await interaction.followup.send(view=view, ephemeral=True)
-        else:
-            await interaction.response.send_message(view=view, ephemeral=True)
 
     async def apply_style(self, guild: discord.Guild) -> None:
         values = await module_config.get_all(guild.id, "style")
