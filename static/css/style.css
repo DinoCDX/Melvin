@@ -1484,6 +1484,47 @@ textarea.dashboard-input {
     outline: 2px solid var(--primary);
 }
 
+.dashboard-dropdown-option input[type="checkbox"] {
+    appearance: none;
+    flex: 0 0 auto;
+    position: relative;
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    background: #252422;
+    border: 2px solid #4a473f;
+    border-bottom-width: 4px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease;
+}
+
+.dashboard-dropdown-option input[type="checkbox"]:checked {
+    background: var(--primary);
+    border-color: color-mix(in srgb, var(--primary) 85%, #000000);
+}
+
+.dashboard-dropdown-option input[type="checkbox"]:checked::after {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 0;
+    width: 4px;
+    height: 8px;
+    border: solid #252422;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+
+.dashboard-dropdown-option input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
+}
+
+.dashboard-dropdown-option input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+}
+
 .dashboard-form-actions {
     display: flex;
     gap: 12px;
