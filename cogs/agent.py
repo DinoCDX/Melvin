@@ -31,6 +31,9 @@ RATE_LIMIT = 10
 RATE_PERIOD = 60 * 60
 GROQ_MODEL = "openai/gpt-oss-20b"
 PAGE_SIZE = 2000
+MAX_SOURCE_TITLE = 80
+MAX_SOURCE_URL = 150
+MAX_TITLE_PROMPT = 200
 
 SYSTEM_PROMPT = (
     "Today's date is {date}. "
@@ -59,10 +62,15 @@ def paginate(text: str, size: int = PAGE_SIZE) -> list[str]:
     return pages or [""]
 
 
-def _web_context(query: str, max_results: int = 5) -> str:
+def _web_results(query: str, max_results: int = 5) -> list[dict[str, str]] | None:
     try:
-        results = list(DDGS().text(query, max_results=max_results))
+        return list(DDGS().text(query, max_results=max_results))
     except Exception:
+        return None
+
+
+def _web_context(results: list[dict[str, str]] | None) -> str:
+    if results is None:
         return "Could not fetch search context."
     if not results:
         return "No search context available."
@@ -70,6 +78,23 @@ def _web_context(query: str, max_results: int = 5) -> str:
         f"Source {i}:\nTitle: {r.get('title')}\nURL: {r.get('href')}\nSnippet: {r.get('body')}\n"
         for i, r in enumerate(results, 1)
     )
+
+
+def _source_links(results: list[dict[str, str]]) -> str:
+    lines: list[str] = []
+    for i, result in enumerate(results, 1):
+        url = result.get("href")
+        if (
+            not url
+            or not url.startswith(("https://", "http://"))
+            or len(url) > MAX_SOURCE_URL
+        ):
+            continue
+        title = (result.get("title") or url).replace("[", "(").replace("]", ")")
+        if len(title) > MAX_SOURCE_TITLE:
+            title = title[: MAX_SOURCE_TITLE - 3] + "..."
+        lines.append(f"-# {i}. [{discord.utils.escape_mentions(title)}](<{url}>)")
+    return "\n".join(lines)
 
 
 class AgentCog(
@@ -142,13 +167,20 @@ class AgentCog(
         else:
             await interaction.response.send_message(view=view, ephemeral=True)
 
-    async def query_groq(self, prompt: str, *, use_search: bool = False) -> str:
+    async def query_groq(
+        self,
+        prompt: str,
+        *,
+        use_search: bool = False,
+    ) -> tuple[str, list[dict[str, str]]]:
         date = datetime.now(UTC).strftime("%B %d, %Y")
         system = SYSTEM_PROMPT.format(date=date)
         context = ""
+        results: list[dict[str, str]] | None = None
         if use_search:
             system += SEARCH_PROMPT
-            search = await asyncio.to_thread(_web_context, prompt)
+            results = await asyncio.to_thread(_web_results, prompt)
+            search = _web_context(results)
             context = f"--- SEARCH CONTEXT ---\n{search}\n--- END CONTEXT ---\n"
 
         try:
@@ -170,7 +202,7 @@ class AgentCog(
 
         if not text:
             raise RuntimeError("**Groq returned an empty response.**")
-        return text
+        return text, results or []
 
     @app_commands.command(
         name="ask",
@@ -202,12 +234,15 @@ class AgentCog(
 
         try:
             start = time.perf_counter()
-            ai_response = await self.query_groq(prompt, use_search=search)
+            ai_response, results = await self.query_groq(prompt, use_search=search)
             elapsed = time.perf_counter() - start
             await self._record_request(interaction.user.id)
 
+            shown_prompt = prompt.replace("`", "")
+            if len(shown_prompt) > MAX_TITLE_PROMPT:
+                shown_prompt = shown_prompt[: MAX_TITLE_PROMPT - 3] + "..."
             view = Paginator(
-                f"# Prompt: `{prompt.replace('`', '')}`",
+                f"# Prompt: `{shown_prompt}`",
                 paginate(ai_response),
                 data_name="Pages",
                 per_page=1,
@@ -226,6 +261,8 @@ class AgentCog(
                 if search
                 else "Generated without web search"
             )
+            if sources := _source_links(results):
+                view.add_under(discord.ui.TextDisplay(f"-# **Sources**\n{sources}"))
             remaining = max(0, RATE_LIMIT - used - 1)
             view.add_under(
                 discord.ui.TextDisplay(
