@@ -9,6 +9,7 @@ from discord.ext import commands
 import module_config
 import module_settings
 from globals import DATA_DIR
+from helpers import durations
 from module_registry import Module, Setting
 from ui import CasesView, ErrorUI, InfoUI, PositiveUI, open_config
 
@@ -33,7 +34,6 @@ NO_PINGS = discord.AllowedMentions(users=False, roles=False)
 REASON_MAX_LENGTH = 300
 Reason = app_commands.Range[str, 1, REASON_MAX_LENGTH]
 BOT_PERMISSION_LABELS = {"kick_members": "Kick Members", "ban_members": "Ban Members"}
-DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 MAX_MUTE_SECONDS = 28 * 86400
 Lockable = discord.TextChannel | discord.VoiceChannel | discord.Thread
 
@@ -116,16 +116,6 @@ class ModCog(
 
     role = app_commands.Group(name="role", description="Moderation role commands.")
     cases = app_commands.Group(name="case", description="Moderation case commands.")
-
-    def parse_duration(self, durationstr: str) -> int | None:
-        multiplier = DURATION_UNITS.get(durationstr[-1:].lower())
-        if multiplier is None:
-            return None
-        try:
-            value = int(durationstr[:-1])
-        except ValueError:
-            return None
-        return value * multiplier if value > 0 else None
 
     async def cog_load(self) -> None:
         async with aiosqlite.connect(self.db_path) as conn:
@@ -428,7 +418,7 @@ class ModCog(
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return
 
-        seconds = self.parse_duration(duration)
+        seconds = durations.parse_duration(duration)
         if not seconds:
             error = "Not a valid duration format."
         elif seconds > MAX_MUTE_SECONDS:

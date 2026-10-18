@@ -14,8 +14,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-import durations
 import module_settings
+from helpers import durations
 from globals import BROWSER, DATA_DIR, THUMBS_DOWN_WHITE, THUMBS_UP_WHITE, WEBSITE_URL
 from module_registry import Module
 from ui import (
