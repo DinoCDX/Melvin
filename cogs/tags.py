@@ -100,17 +100,25 @@ EMBED_KEYS = (
 )
 VARIABLE = re.compile(
     r"\$\$|\$\*"
-    r"|\$time(?::(?P<style>[tTdDfFR]))?"
+    r"|\$time\b(?::(?P<style>[tTdDfFR]))?"
     r"|\$(?P<num>\d+)(?P<rest>\+)?"
-    r"|\$rand\[(?P<low>-?\d+)-(?P<high>-?\d+)\]"
-    r"|\$pick\[(?P<options>[^\]\n]*)\]"
-    r"|\$shuffle\[(?P<shuffle>[^\]\n]*)\]"
-    r"|\$roll\[(?P<count>\d{1,2})d(?P<sides>\d{1,4})\]"
-    r"|\$(?P<case>upper|lower)\[(?P<cased>[^\]\n]*)\]"
+    r"|\$rand\{(?P<low>-?\d+)-(?P<high>-?\d+)\}"
+    r"|\$pick\{(?P<options>[^{}\n]*)\}"
+    r"|\$shuffle\{(?P<shuffle>[^{}\n]*)\}"
+    r"|\$roll\{(?P<count>\d{1,2})d(?P<sides>\d{1,4})\}"
+    r"|\$(?P<case>upper|lower)\{(?P<cased>[^{}\n]*)\}"
     r"|\$user\b|\$server\b"
+    r"|\$(?P<var>[a-z][a-z0-9_]{0,31})\b"
 )
+CONTROL = re.compile(r"\{(?P<kw>if|elif|else|endif)(?=[\s}])(?P<cond>(?:[^{}]|\{[^{}]*\})*)\}")
+ASSIGN = re.compile(r"\$(?P<name>[a-z][a-z0-9_]{0,31})\s*=\s*(?P<expr>.*)")
+COMPARE = re.compile(r"(?P<left>.+?)\s*(?P<op>==|!=|<=|>=|<|>)\s*(?P<right>.+)")
+RESERVED_NAMES = frozenset({"user", "server", "time", "rand", "pick", "shuffle", "roll", "upper", "lower"})
+LEGACY_FUNCTION = re.compile(r"\$(rand|pick|shuffle|roll|upper|lower)\[([^\]\n]*)\]")
+LEGACY_MARKER = re.compile(r"^([ \t]*)\[(embed|container)\][ \t]*$", re.MULTILINE | re.IGNORECASE)
+LEGACY_SEPARATOR = re.compile(r"^([ \t]*)\[separator(:(?:small|large))?\][ \t]*$", re.MULTILINE | re.IGNORECASE)
 HEX_COLOR = re.compile(r"#?([0-9a-fA-F]{6})")
-SEPARATOR = re.compile(r"\[separator(?::(?P<size>small|large))?\]", re.IGNORECASE)
+SEPARATOR = re.compile(r"\{separator(?::(?P<size>small|large))?\}", re.IGNORECASE)
 ROLL_MAX_DICE = 20
 ROLL_MAX_SIDES = 1000
 
@@ -153,7 +161,11 @@ def _tag_name(name: str) -> str | None:
 
 
 def _cut(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 3] + "..."
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[: max(limit, 0)]
+    return text[: limit - 3] + "..."
 
 
 def _link(value: str, label: str) -> str:
@@ -281,9 +293,9 @@ def parse_tag(raw: str) -> TagBody:
 
     lines = text.splitlines()
     marker = lines[0].strip().lower()
-    if marker == "[embed]":
+    if marker == "{embed}":
         return _parse_embed(lines[1:])
-    if marker == "[container]":
+    if marker == "{container}":
         return _parse_container(lines[1:])
     if len(text) > MESSAGE_TEXT_LENGTH:
         msg = f"A plain text tag can be at most {MESSAGE_TEXT_LENGTH} characters."
@@ -291,12 +303,70 @@ def parse_tag(raw: str) -> TagBody:
     return TagBody(text=text)
 
 
+def _check_name(name: str) -> None:
+    if name in RESERVED_NAMES:
+        msg = f"`${name}` is built in, so it can't be set. Pick another name."
+        raise CommandError(msg)
+
+
+def _check_blocks(raw: str) -> None:
+    stack: list[bool] = []
+    for match in CONTROL.finditer(raw):
+        kw, cond = match["kw"], match["cond"].strip()
+        if kw in ("if", "elif") and not cond:
+            msg = f"{{{kw}}} needs a condition, like {{{kw} $a > $b}}."
+            raise TagFormatError(msg)
+        if kw == "if":
+            stack.append(False)
+        elif kw == "elif":
+            if not stack or stack[-1]:
+                msg = "{elif} has to come after an {if}, before any {else}."
+                raise TagFormatError(msg)
+        elif kw == "else":
+            if not stack or stack[-1]:
+                msg = "{else} has to come after an {if}, and only once."
+                raise TagFormatError(msg)
+            stack[-1] = True
+        else:
+            if not stack:
+                msg = "{endif} has no matching {if}."
+                raise TagFormatError(msg)
+            stack.pop()
+    if stack:
+        msg = "An {if} is missing its {endif}."
+        raise TagFormatError(msg)
+    if len(re.findall(r"\{(?:if|elif|else|endif)\b", raw)) != len(list(CONTROL.finditer(raw))):
+        msg = "Couldn't read a block. Check the {if}, {elif}, {else}, and {endif} tags."
+        raise TagFormatError(msg)
+
+
+def flatten_tag(raw: str) -> str:
+    kept = []
+    for line in CONTROL.sub("", raw).splitlines():
+        match = ASSIGN.fullmatch(line.strip())
+        if match is None:
+            kept.append(line)
+            continue
+        _check_name(match["name"])
+    return "\n".join(kept)
+
+
 def check_tag(raw: str) -> str | None:
     try:
-        parse_tag(raw)
-    except TagFormatError as error:
+        _check_blocks(raw)
+        parse_tag(flatten_tag(raw))
+    except (TagFormatError, CommandError) as error:
         return str(error)
     return None
+
+
+def migrate_brackets(text: str) -> str:
+    text = LEGACY_FUNCTION.sub(lambda m: "$" + m[1] + "{" + m[2] + "}", text)
+    text = LEGACY_MARKER.sub(lambda m: m[1] + "{" + m[2].lower() + "}", text)
+    return LEGACY_SEPARATOR.sub(
+        lambda m: m[1] + "{separator" + (m[2] or "").lower() + "}",
+        text,
+    )
 
 
 def split_args(text: str) -> list[str]:
@@ -322,6 +392,8 @@ def expand_variables(
             return context.get("user", "")
         if token == "$server":
             return context.get("server", "")
+        if match.group("var"):
+            return context.get(match.group("var"), token)
         if token.startswith("$time"):
             return f"<t:{now}:{match.group('style') or 'f'}>"
         if token.startswith("$rand"):
@@ -351,6 +423,95 @@ def expand_variables(
         return args[number - 1]
 
     return VARIABLE.sub(replace, text)
+
+
+def _operand(text: str, args: list[str], now: int, context: dict[str, str]) -> str:
+    stripped = text.strip()
+    name = re.fullmatch(r"\$([a-z][a-z0-9_]{0,31})", stripped)
+    if name is not None and name[1] not in context:
+        return ""
+    return expand_variables(stripped, args, now, context).strip()
+
+
+def _truth(cond: str, args: list[str], now: int, context: dict[str, str]) -> bool:
+    match = COMPARE.fullmatch(cond.strip())
+    if match is None:
+        return _operand(cond, args, now, context) not in ("", "0")
+    left = _operand(match["left"], args, now, context)
+    right = _operand(match["right"], args, now, context)
+    try:
+        a, b = int(left), int(right)
+    except ValueError:
+        a, b = left, right
+    return {
+        "==": a == b,
+        "!=": a != b,
+        "<": a < b,
+        ">": a > b,
+        "<=": a <= b,
+        ">=": a >= b,
+    }[match["op"]]
+
+
+def _assign_lines(text: str, args: list[str], now: int, context: dict[str, str]) -> str:
+    kept = []
+    for line in text.splitlines(keepends=True):
+        match = ASSIGN.fullmatch(line.strip())
+        if match is None:
+            kept.append(line)
+            continue
+        _check_name(match["name"])
+        context[match["name"]] = expand_variables(
+            match["expr"],
+            args,
+            now,
+            context,
+        ).strip()
+    return "".join(kept)
+
+
+def resolve_blocks(
+    raw: str,
+    args: list[str],
+    now: int,
+    context: dict[str, str],
+) -> str:
+    try:
+        _check_blocks(raw)
+    except TagFormatError as error:
+        raise CommandError(str(error)) from error
+
+    stack: list[dict[str, bool]] = []
+    pieces: list[str] = []
+
+    def live() -> bool:
+        return not stack or stack[-1]["on"]
+
+    position = 0
+    for match in CONTROL.finditer(raw):
+        if live():
+            pieces.append(_assign_lines(raw[position : match.start()], args, now, context))
+        position = match.end()
+        kw, cond = match["kw"], match["cond"].strip()
+        if kw == "if":
+            parent = live()
+            taken = parent and _truth(cond, args, now, context)
+            stack.append({"parent": parent, "taken": taken, "on": taken})
+        elif kw == "elif":
+            frame = stack[-1]
+            frame["on"] = bool(
+                frame["parent"] and not frame["taken"] and _truth(cond, args, now, context),
+            )
+            frame["taken"] = frame["taken"] or frame["on"]
+        elif kw == "else":
+            frame = stack[-1]
+            frame["on"] = frame["parent"] and not frame["taken"]
+            frame["taken"] = True
+        else:
+            stack.pop()
+    if live():
+        pieces.append(_assign_lines(raw[position:], args, now, context))
+    return "".join(pieces)
 
 
 def _text_or(value: str, fallback: str) -> str:
@@ -570,6 +731,16 @@ class TagsCog(
             for column, definition in TAG_COLUMNS:
                 if column not in existing:
                     await conn.execute(f"ALTER TABLE tags ADD COLUMN {column} {definition}")
+            rows = await (await conn.execute(
+                "SELECT guild_id, name, content FROM tags WHERE content LIKE '%[%'",
+            )).fetchall()
+            for guild_id, name, content in rows:
+                migrated = migrate_brackets(content)
+                if migrated != content:
+                    await conn.execute(
+                        "UPDATE tags SET content = ? WHERE guild_id = ? AND name = ?",
+                        (migrated, guild_id, name),
+                    )
             await conn.commit()
 
     async def _fetch(self, guild_id: int, name: str) -> Tag | None:
@@ -728,7 +899,7 @@ class TagsCog(
         now = int(time.time())
         context = {"user": member.mention, "server": guild.name}
         try:
-            body = parse_tag(tag.content)
+            body = parse_tag(resolve_blocks(tag.content, values, now, context))
         except TagFormatError as error:
             raise CommandError(str(error)) from error
 
@@ -1004,7 +1175,7 @@ class TagsCog(
             return
 
         try:
-            kind = parse_tag(row.content).kind
+            kind = parse_tag(flatten_tag(row.content)).kind
         except TagFormatError:
             kind = "broken"
         created = discord.utils.format_dt(
