@@ -23,7 +23,7 @@ Start with `[embed]`, then one key per line:
 An embed needs a title, a description, or a field.
 
 **Container (Components V2)**
-Start with `[container]`. Lines are text, and `---` on its own starts a new text block. Text can be up to 4000 characters in total.
+Start with `[container]`. Lines are text. `[separator]` adds a small divider, and `[separator:large]` adds a large one. Use `[separator:small]` to be explicit. Text can be up to 4000 characters in total.
 - `color:` a hex code for the accent bar
 - `button: label | link` up to 5 link buttons, added under the text
 
@@ -34,7 +34,7 @@ Any line that isn't a key is treated as text. A line that starts with `title:` i
 [container]
 ## Welcome to the server
 Read the rules first.
----
+[separator]
 Questions? Ask in the help channel.
 button: Rules | https://example.com/rules
 ```
@@ -50,6 +50,12 @@ Variables are filled in from the arguments given with the tag.
 | `$$` | A literal `$`. |
 | `$rand[1-6]` | A random whole number from 1 to 6, inclusive. Each use picks again. |
 | `$pick[red\|green\|blue]` | One of the options, picked at random. Options are separated by `\|`. Each use picks again. |
+| `$shuffle[a\|b\|c]` | The options in a random order, separated by commas. Options are separated by `\|`. |
+| `$roll[2d6]` | The total of rolling that many dice with that many sides. Up to 20 dice, with up to 1000 sides. |
+| `$upper[text]` | The text in capitals. Variables inside it still work. |
+| `$lower[text]` | The text in lower case. Variables inside it still work. |
+| `$user` | A mention of the person who used the tag. |
+| `$server` | The name of this server. |
 
 Arguments are split on spaces. Wrap an argument in quotes to keep spaces inside it, like `"blue sky"`.
 
@@ -140,3 +146,38 @@ Requires Manage Server. Guild only.
 ## Notes
 Tag names are checked on every command, so a name with spaces or symbols is rejected with an error.
 Tag text is stored exactly as typed, so the edit form shows what you wrote, not the rendered output.
+
+## Arguments
+`/tags create` and `/tags edit` take an `args` list of `name:type`, separated by spaces. Use them in the tag as `$1`, `$2`, and so on, in the order given.
+
+| Type | Takes |
+|------|-------|
+| `word` | One word. |
+| `number` | A whole number. Add a range like `amount:number:1-100`. |
+| `member` | A member, as a mention or ID. |
+| `role` | A role, as a mention or ID. |
+| `channel` | A channel, as a mention or ID. |
+| `text` | The rest of the message. Must be the last argument. |
+
+Add `?` after the name to make an argument optional, like `reason?:text`. Required arguments come before optional ones. Wrap a value in quotes to keep spaces inside it. If a value doesn't check out, Melvin says what's wrong and doesn't post the tag.
+
+Tags without an argument list take whatever follows the name, as before, so `$1` still works without one.
+
+## Permissions
+`permission` decides who can use the tag: `none` for everyone, a permission like `manage_messages` (administrators can always use it), or a role, as a mention or ID.
+
+## Cooldowns
+`cooldown` is the number of seconds each member waits between uses, from 0 to 86400. It only starts after the tag posts.
+
+## Actions
+`actions` gives or takes roles after the tag posts, one per line:
+
+```
+addrole $user @Member
+removerole $1 @Muted
+```
+
+Each line is `addrole` or `removerole`, then a member and a role. The member can be `$user`, `$1`, a mention, or an ID. The role can be a mention, an ID, or an argument. Only members with Manage Roles can use a tag with actions. Melvin skips roles at or above its own top role or the user's top role, and roles that are managed or @everyone.
+
+## Using tags from chat or /tags use
+A tag runs from chat with the prefix, like `?rules`, or with `/tags use`. The chat prefix is set in the tags module's settings.
